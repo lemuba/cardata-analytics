@@ -273,6 +273,27 @@ class CardataAnalyticsSensor(SensorEntity):
     def native_value(self):
         return self.description.value_fn(self.runtime.snapshot())
 
+
+    @property
+    def extra_state_attributes(self):
+        """Expose selected-period coverage metadata for transparency."""
+        if not self.description.custom_period:
+            return None
+        snapshot = self.runtime.snapshot()
+        return {
+            "requested_from": snapshot.range_from.isoformat(),
+            "requested_to": snapshot.range_to.isoformat(),
+            "data_complete": snapshot.custom_coverage_complete,
+            "coverage_status": snapshot.custom_coverage_status,
+            "tracking_started_at": snapshot.tracking_started_at.isoformat(),
+            "history_complete_from": snapshot.history_complete_from.isoformat(),
+            "effective_data_from": (
+                snapshot.custom_effective_from.isoformat()
+                if snapshot.custom_effective_from is not None
+                else None
+            ),
+        }
+
     @property
     def available(self) -> bool:
         if self.description.custom_period:

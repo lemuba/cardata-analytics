@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.recorder import get_instance
@@ -110,6 +110,11 @@ class VehicleSnapshot:
     custom_km: float | None
     custom_avg: float | None
     custom_ready: bool
+    tracking_started_at: datetime
+    history_complete_from: datetime
+    custom_effective_from: datetime | None
+    custom_coverage_complete: bool
+    custom_coverage_status: str
 
 
 class VehicleRuntime:
@@ -126,6 +131,11 @@ class VehicleRuntime:
         self._custom_km: float | None = None
         self._custom_avg: float | None = None
         self._custom_ready = False
+        self._tracking_started_at = dt_util.now()
+        self._history_complete_from = dt_util.now()
+        self._custom_effective_from: datetime | None = None
+        self._custom_coverage_complete = False
+        self._custom_coverage_status = "initializing"
         self._range_refresh_lock = False
         self._range_refresh_pending = False
 
@@ -133,9 +143,36 @@ class VehicleRuntime:
         """Load persistent data and start listeners."""
         stored = await self.store.async_load() or {}
         now = dt_util.now()
+        stored_tracking_started = stored.get("tracking_started_at")
+        parsed_tracking_started = (
+            dt_util.parse_datetime(stored_tracking_started)
+            if isinstance(stored_tracking_started, str)
+            else None
+        )
+        if parsed_tracking_started is None:
+            created_at = getattr(self.entry, "created_at", None)
+            if isinstance(created_at, datetime):
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                parsed_tracking_started = created_at
+            else:
+                parsed_tracking_started = now
+        self._tracking_started_at = dt_util.as_utc(parsed_tracking_started)
+
+        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        tracking_local = self._tracking_started_at.astimezone(tz)
+        # Historical day ranges are only considered fully covered from the
+        # first complete local day after tracking started. This is deliberately
+        # conservative: it avoids presenting the installation day as a complete
+        # 24-hour history when the integration was added part-way through it.
+        self._history_complete_from = datetime.combine(
+            tracking_local.date() + timedelta(days=1), time.min, tzinfo=tz
+        )
+
         self.data = {
             "total_kwh": float(stored.get("total_kwh", 0.0)),
             "periods": stored.get("periods", {}),
+            "tracking_started_at": self._tracking_started_at.isoformat(),
         }
         mileage = self.current_mileage
         for period in PERIODS:
@@ -251,6 +288,11 @@ class VehicleRuntime:
             custom_km=self._custom_km,
             custom_avg=self._custom_avg,
             custom_ready=self._custom_ready,
+            tracking_started_at=self._tracking_started_at,
+            history_complete_from=self._history_complete_from,
+            custom_effective_from=self._custom_effective_from,
+            custom_coverage_complete=self._custom_coverage_complete,
+            custom_coverage_status=self._custom_coverage_status,
         )
 
     def _analytics_entity_id(self, key: str) -> str | None:
@@ -275,10 +317,21 @@ class VehicleRuntime:
         value = result.get("change")
         return None if value is None else max(0.0, float(value))
 
-    def _set_custom_values(self, energy_kwh: float | None, distance_km: float | None) -> None:
-        """Store selected-period values and derive average consumption."""
+    def _set_custom_values(
+        self,
+        energy_kwh: float | None,
+        distance_km: float | None,
+        *,
+        effective_from: datetime | None = None,
+        coverage_complete: bool = False,
+        coverage_status: str = "partial",
+    ) -> None:
+        """Store selected-period values, coverage metadata and derived average."""
         self._custom_kwh = energy_kwh
         self._custom_km = distance_km
+        self._custom_effective_from = effective_from
+        self._custom_coverage_complete = coverage_complete
+        self._custom_coverage_status = coverage_status
         if energy_kwh is not None and distance_km is not None and distance_km > 0:
             self._custom_avg = energy_kwh / distance_km * 100.0
         elif distance_km == 0:
@@ -288,17 +341,19 @@ class VehicleRuntime:
         self._custom_ready = energy_kwh is not None and distance_km is not None
 
     async def async_refresh_custom_period(self) -> None:
-        """Calculate the selected period, including today's live values.
+        """Calculate the selected period and report whether history is complete.
 
-        Recorder statistics are ideal for completed days, but the current hour can
-        lag behind the live vehicle state. If the selected period includes today,
-        use recorder statistics only up to today's midnight and add this runtime's
-        live day counters. This keeps the comparison period in sync with the
-        Today sensors while preserving long-term historical calculation.
+        Historical values come from long-term Recorder statistics of this
+        integration's cumulative mileage and energy sensors. Today's values are
+        added from live counters so the selected range updates immediately.
+
+        A selected range may start before Cardata Analytics existed. In that
+        case we deliberately clamp the historical query to the first complete
+        local day for which this integration can provide a full history and
+        expose the result as *partial* instead of silently pretending the whole
+        requested period was covered.
         """
         if self._range_refresh_lock:
-            # Do not drop a refresh request while a previous recorder query is still
-            # running. Remember it and run one more pass with the newest date range.
             self._range_refresh_pending = True
             return
         self._range_refresh_lock = True
@@ -306,73 +361,147 @@ class VehicleRuntime:
         try:
             start_date = self.range_from
             end_date = self.range_to
-            today = dt_util.now().date()
+            now = dt_util.now()
+            today = now.date()
+            tz = dt_util.get_time_zone(self.hass.config.time_zone)
 
             if start_date > end_date:
-                self._set_custom_values(None, None)
+                self._set_custom_values(
+                    None, None, coverage_complete=False, coverage_status="invalid_range"
+                )
                 return
 
-            # A range entirely in the future has no measured data yet.
+            requested_start_local = datetime.combine(start_date, time.min, tzinfo=tz)
+            requested_end_local = datetime.combine(
+                end_date + timedelta(days=1), time.min, tzinfo=tz
+            )
+            today_start_local = datetime.combine(today, time.min, tzinfo=tz)
+
             if start_date > today:
-                self._set_custom_values(0.0, 0.0)
+                self._set_custom_values(
+                    0.0,
+                    0.0,
+                    effective_from=None,
+                    coverage_complete=False,
+                    coverage_status="future",
+                )
                 return
 
             energy_id = self._analytics_entity_id("energy_consumed_total")
             mileage_id = self._analytics_entity_id("mileage")
             if not energy_id or not mileage_id:
-                self._set_custom_values(None, None)
+                self._set_custom_values(
+                    None, None, coverage_complete=False, coverage_status="entities_missing"
+                )
                 return
 
-            tz = dt_util.get_time_zone(self.hass.config.time_zone)
-            start_local = datetime.combine(start_date, time.min, tzinfo=tz)
+            # Only full local days after initial setup are considered complete
+            # historical coverage. This prevents an installation at e.g. 15:00
+            # from masquerading as a full day's history.
+            effective_start_local = max(requested_start_local, self._history_complete_from)
+            requested_extends_before_history = requested_start_local < self._history_complete_from
+            requested_extends_into_future = end_date > today
 
-            # Completed range: use recorder/statistics for the complete inclusive
-            # date range exactly as before.
+            # No full historical day overlaps the request and today is not part
+            # of it. There is nothing reliable to aggregate yet.
+            if end_date < today and effective_start_local >= requested_end_local:
+                self._set_custom_values(
+                    0.0,
+                    0.0,
+                    effective_from=None,
+                    coverage_complete=False,
+                    coverage_status="no_data",
+                )
+                return
+
+            coverage_complete = not requested_extends_before_history and not requested_extends_into_future
+            coverage_status = "complete" if coverage_complete else "partial"
+
+            # Completed range: query only the reliable overlap.
             if end_date < today:
-                end_local = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=tz)
                 energy_change = await self._async_statistic_change(
-                    energy_id, dt_util.as_utc(start_local), dt_util.as_utc(end_local)
+                    energy_id,
+                    dt_util.as_utc(effective_start_local),
+                    dt_util.as_utc(requested_end_local),
                 )
                 mileage_change = await self._async_statistic_change(
-                    mileage_id, dt_util.as_utc(start_local), dt_util.as_utc(end_local)
+                    mileage_id,
+                    dt_util.as_utc(effective_start_local),
+                    dt_util.as_utc(requested_end_local),
                 )
-                self._set_custom_values(energy_change, mileage_change)
+                if energy_change is None or mileage_change is None:
+                    self._set_custom_values(
+                        None,
+                        None,
+                        effective_from=effective_start_local,
+                        coverage_complete=False,
+                        coverage_status="no_statistics",
+                    )
+                else:
+                    self._set_custom_values(
+                        energy_change,
+                        mileage_change,
+                        effective_from=effective_start_local,
+                        coverage_complete=coverage_complete,
+                        coverage_status=coverage_status,
+                    )
                 return
 
-            # The selected range includes today. Historical values are queried only
-            # through 00:00 today; today's part comes from the integration's live
-            # day counters so it updates immediately with new SoC/mileage data.
+            # Range includes today. Historical values stop at today's midnight;
+            # the current day is added from the live runtime counters.
             snapshot = self.snapshot()
             live_energy = max(0.0, float(snapshot.period_kwh["day"]))
             live_distance = max(0.0, float(snapshot.period_km["day"]))
 
-            if start_date == today:
-                historical_energy = 0.0
-                historical_distance = 0.0
-            else:
-                today_start_local = datetime.combine(today, time.min, tzinfo=tz)
-                historical_energy = await self._async_statistic_change(
-                    energy_id, dt_util.as_utc(start_local), dt_util.as_utc(today_start_local)
-                )
-                historical_distance = await self._async_statistic_change(
-                    mileage_id, dt_util.as_utc(start_local), dt_util.as_utc(today_start_local)
-                )
+            historical_energy = 0.0
+            historical_distance = 0.0
+            historical_effective_from: datetime | None = None
 
-                # A newly installed vehicle may not have a completed-hour statistic
-                # before today yet. For a range that includes today, still expose the
-                # live Today values instead of turning the whole comparison unavailable.
-                # As soon as historical statistics exist, they are added automatically.
-                if historical_energy is None:
+            if effective_start_local < today_start_local:
+                historical_effective_from = effective_start_local
+                historical_energy_result = await self._async_statistic_change(
+                    energy_id,
+                    dt_util.as_utc(effective_start_local),
+                    dt_util.as_utc(today_start_local),
+                )
+                historical_distance_result = await self._async_statistic_change(
+                    mileage_id,
+                    dt_util.as_utc(effective_start_local),
+                    dt_util.as_utc(today_start_local),
+                )
+                if historical_energy_result is None or historical_distance_result is None:
+                    # We still have meaningful live-today values, but the
+                    # historical portion cannot be trusted as complete.
                     historical_energy = 0.0
-                if historical_distance is None:
                     historical_distance = 0.0
+                    coverage_complete = False
+                    coverage_status = "no_statistics"
+                else:
+                    historical_energy = historical_energy_result
+                    historical_distance = historical_distance_result
+
+            # If the integration itself only started today, today's live counters
+            # are still useful, but they represent only the tracked part of today.
+            if requested_start_local < self._history_complete_from:
+                coverage_complete = False
+                if coverage_status == "complete":
+                    coverage_status = "partial"
+
+            effective_from = historical_effective_from
+            if effective_from is None and start_date <= today <= end_date:
+                effective_from = max(self._tracking_started_at.astimezone(tz), today_start_local)
 
             self._set_custom_values(
                 historical_energy + live_energy,
                 historical_distance + live_distance,
+                effective_from=effective_from,
+                coverage_complete=coverage_complete,
+                coverage_status=coverage_status,
             )
-        except Exception:  # Recorder can be temporarily unavailable during startup.
+        except Exception:
             self._custom_ready = False
+            self._custom_coverage_complete = False
+            self._custom_coverage_status = "recorder_error"
         finally:
             self._range_refresh_lock = False
             async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))

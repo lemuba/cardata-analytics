@@ -2,7 +2,7 @@
 
 Home Assistant custom integration for vehicle energy and distance analytics based on existing sensor entities.
 
-**Cardata Analytics 0.1.0** is a standalone successor branch based on the proven BMW Cardata Analyse 0.5.5 logic, but it uses its own Home Assistant domain and storage namespace:
+**Cardata Analytics 0.1.1** is a standalone successor branch based on the proven BMW Cardata Analyse 0.5.5 logic, but it uses its own Home Assistant domain and storage namespace:
 
 - Integration domain: `cardata_analytics`
 - Install path: `/config/custom_components/cardata_analytics/`
@@ -53,6 +53,18 @@ kWh_per_100km = consumed_kWh / driven_km × 100
 ```
 
 The integration creates values for today, week, month, year, total energy and a user-selected comparison period. Recorder statistics are used for historical comparison ranges while the current day is added from live counters.
+
+### Historical data coverage
+
+Cardata Analytics never pretends that a requested historical period is complete when the integration did not yet have reliable analytics data. The integration stores when tracking started and considers historical day ranges fully covered from the first complete local day after installation.
+
+When a custom period starts earlier than that, Cardata Analytics:
+
+- calculates the reliable overlap that is actually available,
+- exposes `data_complete: false` and coverage metadata on the custom-period sensors, and
+- shows a warning in the dashboard card with the date from which complete historical evaluation is available.
+
+If Recorder statistics are unexpectedly missing for an otherwise covered historical period, the custom-period sensors are marked unavailable instead of silently returning a misleading complete result. Long historical ranges (for example two years) therefore work as long as Cardata Analytics long-term statistics actually cover that interval.
 
 ## Comparison period
 

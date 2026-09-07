@@ -26,7 +26,7 @@ from .runtime import VehicleRuntime
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_MODULE = f"{FRONTEND_URL}/cardata-analytics-card.js?v=0.1.0"
+FRONTEND_MODULE = f"{FRONTEND_URL}/cardata-analytics-card.js?v=0.1.1"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
 

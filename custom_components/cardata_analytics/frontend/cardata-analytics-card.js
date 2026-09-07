@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.1.1";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -268,6 +268,16 @@ class CardataAnalyticsCard extends HTMLElement {
       if (entityId.startsWith("select.")) {
         extra = `|${JSON.stringify(stateObj.attributes?.options || [])}`;
       }
+      if (Object.prototype.hasOwnProperty.call(stateObj.attributes || {}, "data_complete")) {
+        extra += `|coverage=${JSON.stringify({
+          data_complete: stateObj.attributes?.data_complete,
+          coverage_status: stateObj.attributes?.coverage_status,
+          history_complete_from: stateObj.attributes?.history_complete_from,
+          effective_data_from: stateObj.attributes?.effective_data_from,
+          requested_from: stateObj.attributes?.requested_from,
+          requested_to: stateObj.attributes?.requested_to,
+        })}`;
+      }
       parts.push(`${entityId}=${stateObj.state}${extra}`);
     }
     return parts.join(";");
@@ -337,6 +347,52 @@ class CardataAnalyticsCard extends HTMLElement {
     </div>`;
   }
 
+  _formatCoverageDate(value) {
+    if (!value) return "";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return String(value);
+    return parsed.toLocaleDateString("de-DE");
+  }
+
+  _coverageInfo(entityId) {
+    const stateObj = entityId ? this._hass?.states?.[entityId] : null;
+    const attrs = stateObj?.attributes || {};
+    const complete = attrs.data_complete === true;
+    const status = attrs.coverage_status || "";
+    const completeFrom = this._formatCoverageDate(attrs.history_complete_from);
+
+    if (complete) return { show: false, text: "", status };
+
+    let text;
+    if (status === "future") {
+      text = "Zeitraum liegt in der Zukunft – noch keine vollständigen Daten vorhanden.";
+    } else if (status === "invalid_range") {
+      text = "Ungültiger Zeitraum: Das Von-Datum liegt nach dem Bis-Datum.";
+    } else if (status === "no_statistics" || status === "recorder_error") {
+      text = completeFrom
+        ? `Historische Recorder-Daten nicht vollständig verfügbar · vollständig auswertbar ab ${completeFrom}.`
+        : "Historische Recorder-Daten sind für diesen Zeitraum nicht vollständig verfügbar.";
+    } else if (status === "no_data") {
+      text = completeFrom
+        ? `Keine vollständigen Analytics-Daten im gewählten Zeitraum · vollständig auswertbar ab ${completeFrom}.`
+        : "Keine Analytics-Daten im gewählten Zeitraum verfügbar.";
+    } else {
+      text = completeFrom
+        ? `Auswertung unvollständig · vollständig auswertbar ab ${completeFrom}.`
+        : "Auswertung unvollständig.";
+    }
+    return { show: true, text, status };
+  }
+
+  _coverageWarning(v) {
+    const id = this._vehicleId(v);
+    const info = this._coverageInfo(v.entities.custom_average_consumption || v.entities.custom_energy);
+    return `<div class="coverage-warning${info.show ? "" : " hidden"}" data-bind="${this._esc(`${id}:coverage`)}">
+      <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
+      <span>${this._esc(info.text)}</span>
+    </div>`;
+  }
+
   _vehicleCard(v) {
     const e = v.entities;
     const id = this._vehicleId(v);
@@ -371,6 +427,7 @@ class CardataAnalyticsCard extends HTMLElement {
         <span><span data-bind="${id}:custom-distance">${this._esc(this._num(e.custom_distance, 1))}</span> km</span>
         <span><span data-bind="${id}:custom-energy">${this._esc(this._num(e.custom_energy, 2))}</span> kWh</span>
         <span>Ø <span data-bind="${id}:custom-avg">${this._esc(this._num(e.custom_average_consumption, 1))}</span> kWh/100 km</span>
+        ${this._coverageWarning(v)}
       </div>
     </section>`;
   }
@@ -417,6 +474,14 @@ class CardataAnalyticsCard extends HTMLElement {
     this._setText(`${id}:custom-distance`, this._num(e.custom_distance, 1));
     this._setText(`${id}:custom-energy`, this._num(e.custom_energy, 2));
     this._setText(`${id}:custom-avg`, this._num(e.custom_average_consumption, 1));
+
+    const coverage = this.shadowRoot?.querySelector(`[data-bind="${CSS.escape(`${id}:coverage`)}"]`);
+    if (coverage) {
+      const info = this._coverageInfo(e.custom_average_consumption || e.custom_energy);
+      const textEl = coverage.querySelector("span");
+      if (textEl && textEl.textContent !== info.text) textEl.textContent = info.text;
+      coverage.classList.toggle("hidden", !info.show);
+    }
 
     const dot = this.shadowRoot?.querySelector(`[data-bind="${CSS.escape(`${id}:soc-color`)}"]`);
     if (dot) dot.style.background = this._socColor(e.soc);
@@ -612,6 +677,9 @@ class CardataAnalyticsCard extends HTMLElement {
 
       .selected-period { display:grid; grid-template-columns:minmax(145px,1.35fr) repeat(3,minmax(95px,1fr)); gap:10px; align-items:center; margin-top:9px; padding:11px 12px; border:1px dashed var(--divider-color); border-radius:12px; font-size:13px; }
       .selected-period strong { font-size:14px; }
+      .coverage-warning { grid-column:1 / -1; display:flex; align-items:flex-start; gap:7px; margin-top:2px; padding:8px 10px; border-radius:9px; background:color-mix(in srgb, var(--warning-color, #f9a825) 14%, transparent); color:var(--primary-text-color); line-height:1.35; }
+      .coverage-warning ha-icon { --mdc-icon-size:18px; color:var(--warning-color, #f9a825); flex:0 0 auto; margin-top:1px; }
+      .coverage-warning.hidden { display:none; }
 
       .clickable { cursor:pointer; transition:background-color .15s ease, transform .15s ease; }
       .clickable:hover { background-color:color-mix(in srgb, var(--secondary-background-color) 88%, var(--primary-color) 12%); }
