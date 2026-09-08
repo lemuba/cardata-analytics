@@ -210,3 +210,7 @@ https://github.com/lemuba/cardata-analytics/issues
 
 MIT
 
+
+### Temporary odometer outages
+
+If a vehicle cloud temporarily stops providing a live odometer value, Cardata Analytics keeps the last valid odometer as a frozen fallback. A last-known value from a previous calendar day is used as the current day's baseline, so historical distance is not counted again as today's distance. When the source returns, new distance accumulates from that frozen baseline. No distance is invented while the source is offline.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.15
+
+- Fix duplicate current-day distance while an odometer source is unavailable.
+- If the last valid odometer sample is from an earlier local day, today's Day baseline is rebased to that frozen last-known odometer instead of reusing an older baseline.
+- Keeps Week/Month/Year and recovered historical days untouched, so an already recovered historical distance is not counted a second time as today.
+- When the manufacturer source returns, new distance automatically accumulates from the frozen current-day baseline.
+- Adds diagnostic metadata for an automatic stale-baseline repair.
+
 ## 0.1.14
 
 - Added generic historical-day recovery for all BEVs; this is not tied to Renault or any manufacturer.

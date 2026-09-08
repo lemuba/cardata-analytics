@@ -289,6 +289,9 @@ class CardataAnalyticsSensor(SensorEntity):
                         if self.runtime.last_valid_mileage_at is not None
                         else None
                     ),
+                    "current_day_baseline_repair": self.runtime.data.get(
+                        "current_day_baseline_repair"
+                    ),
                 }
             )
 
@@ -343,6 +346,9 @@ class CardataAnalyticsSensor(SensorEntity):
                         self.runtime.last_valid_mileage_at.isoformat()
                         if self.runtime.last_valid_mileage_at is not None
                         else None
+                    ),
+                    "current_day_baseline_repair": self.runtime.data.get(
+                        "current_day_baseline_repair"
                     ),
                     # Diagnostic overlap values are intentionally attributes only.
                     # The normal sensor state remains unknown when the requested

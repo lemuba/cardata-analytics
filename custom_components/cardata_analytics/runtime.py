@@ -329,6 +329,7 @@ class VehicleRuntime:
             )
 
         self._rollover(now, mileage)
+        self._repair_stale_current_day_odometer_baseline(now)
         self._repair_previous_day_from_existing_counters(now)
         self._recover_daily_history_from_period_aggregates(now, mileage)
         await self.store.async_save(self.data)
@@ -825,6 +826,77 @@ class VehicleRuntime:
 
         return changed
 
+    def _repair_stale_current_day_odometer_baseline(self, now: datetime) -> bool:
+        """Rebase today's odometer baseline when the live source is stale.
+
+        A manufacturer/cloud outage can leave ``current_mileage`` on the last
+        valid value from a previous calendar day. Older releases could keep an
+        even older Day ``start_mileage`` across an upgrade/restart. The result
+        was that the last historical distance appeared a second time as today's
+        distance (for example 15 km yesterday *and* 15 km today).
+
+        When there has been no valid odometer sample on the current local day,
+        there is no evidence for any distance travelled today. Use the last
+        known odometer as today's frozen baseline instead. Once the source
+        returns, a newer odometer value naturally accumulates from this baseline.
+
+        This repair is deliberately limited to the Day bucket. Week/Month/Year
+        baselines must remain unchanged because they legitimately include prior
+        completed days.
+        """
+        if self.source_mileage is not None:
+            return False
+        if self._last_valid_mileage is None:
+            return False
+
+        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        last_valid_local_date: date | None = None
+        if self._last_valid_mileage_at is not None:
+            last_valid_local_date = self._last_valid_mileage_at.astimezone(tz).date()
+
+        # If a valid source sample already exists today, the Day baseline must
+        # not be rewritten; current-day distance can be calculated normally.
+        if last_valid_local_date is not None and last_valid_local_date >= now.date():
+            return False
+
+        periods = self.data.get("periods", {})
+        day_data = periods.get("day")
+        if not isinstance(day_data, dict) or day_data.get("id") != _period_id("day", now):
+            return False
+
+        try:
+            frozen_mileage = float(self._last_valid_mileage)
+            old_start_raw = day_data.get("start_mileage")
+            old_start = float(old_start_raw) if old_start_raw is not None else None
+        except (TypeError, ValueError):
+            return False
+
+        if old_start is not None and math.isclose(old_start, frozen_mileage, abs_tol=1e-6):
+            return False
+
+        day_data["start_mileage"] = frozen_mileage
+        self.data["current_day_baseline_repaired_at"] = dt_util.utcnow().isoformat()
+        self.data["current_day_baseline_repair"] = {
+            "date": now.date().isoformat(),
+            "previous_start_mileage": old_start,
+            "new_start_mileage": frozen_mileage,
+            "last_valid_mileage_at": (
+                self._last_valid_mileage_at.isoformat()
+                if self._last_valid_mileage_at is not None
+                else None
+            ),
+            "reason": "stale_odometer_source",
+        }
+        _LOGGER.warning(
+            "Rebased stale current-day odometer baseline for %s: %s -> %s km "
+            "(last valid source update: %s)",
+            self.entry.title,
+            old_start,
+            frozen_mileage,
+            self._last_valid_mileage_at,
+        )
+        return True
+
     def _rollover(self, now: datetime, mileage: float | None) -> bool:
         changed = False
         for period in PERIODS:
@@ -1202,6 +1274,7 @@ class VehicleRuntime:
 
         mileage = self.current_mileage
         changed = self._rollover(now, mileage) or remembered_mileage
+        changed = self._repair_stale_current_day_odometer_baseline(now) or changed
         changed = self._recover_daily_history_from_period_aggregates(now, mileage) or changed
 
         if entity_id == self.entry.data[CONF_SOC_ENTITY]:
@@ -1248,6 +1321,7 @@ class VehicleRuntime:
     async def _async_handle_midnight(self, now: datetime) -> None:
         mileage = self.current_mileage
         changed = self._rollover(now, mileage)
+        changed = self._repair_stale_current_day_odometer_baseline(now) or changed
         changed = self._recover_daily_history_from_period_aggregates(now, mileage) or changed
         if changed:
             await self.store.async_save(self.data)
@@ -1259,7 +1333,11 @@ class VehicleRuntime:
         self.hass.async_create_task(self._async_hourly_refresh(now))
 
     async def _async_hourly_refresh(self, now: datetime) -> None:
-        if self._recover_daily_history_from_period_aggregates(now, self.current_mileage):
+        changed = self._repair_stale_current_day_odometer_baseline(now)
+        changed = self._recover_daily_history_from_period_aggregates(
+            now, self.current_mileage
+        ) or changed
+        if changed:
             await self.store.async_save(self.data)
             async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))
         await self.async_refresh_custom_period()
