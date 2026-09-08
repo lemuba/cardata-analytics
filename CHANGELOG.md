@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11
+
+- Fixed a vehicle's "Gewählter Zeitraum" (selected period) sensors sometimes staying frozen on an outdated result (or `unknown`, for a brand-new vehicle) instead of reflecting the currently selected comparison period.
+- The selected period was previously only (re)calculated on the next SoC/mileage state change, the hourly tick, midnight, or a live range change pushed by the controller to an already-registered vehicle. A vehicle whose config entry loads or reloads after the last range change — including every Home Assistant restart — never received that push and kept showing whatever was last computed, potentially for a completely different period.
+- Each vehicle now calculates its selected-period result once immediately after it registers with the shared comparison-period controller, so it always reflects the currently selected Von/Bis dates as soon as the vehicle is available, instead of waiting for an unrelated trigger.
+
 ## 0.1.10
 
 - Fixed the dashboard card getting stuck showing the previous "Gewählter Zeitraum" (selected period) values after changing the quick selection or the Von/Bis dates, until the user tapped away from the control.

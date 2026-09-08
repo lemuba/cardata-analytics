@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.10";
+const CARD_VERSION = "0.1.11";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
