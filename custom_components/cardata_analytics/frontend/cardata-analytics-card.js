@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.12";
+const CARD_VERSION = "0.1.14";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -83,9 +83,12 @@ class CardataAnalyticsCard extends HTMLElement {
   }
 
   _isControlInteractionActive() {
-    if (this._controlInteraction) return true;
-    const active = this.shadowRoot?.activeElement;
-    return !!active && (active.tagName === "SELECT" || active.tagName === "INPUT");
+    // Only suppress updates while a native picker/dropdown is actually open.
+    // A SELECT/INPUT may keep keyboard focus after the user has committed a
+    // value. Treating mere focus as an active interaction left later HA state
+    // updates queued forever until the field was blurred, so the dashboard
+    // could show the new dates together with stale selected-period values.
+    return this._controlInteraction;
   }
 
   _beginControlInteraction() {
@@ -95,16 +98,23 @@ class CardataAnalyticsCard extends HTMLElement {
   _finishControlInteraction(delay = 0) {
     window.setTimeout(() => {
       this._controlInteraction = false;
-      if (this._renderPending) {
-        this._renderPending = false;
-        if (this._domBuilt && this._structureSignature() === this._lastStructureSignature) {
-          this._updateValues();
-          this._lastStateSignature = this._stateSignature();
-        } else {
-          this._renderFull();
-        }
-      }
+      this._flushPendingValues();
     }, delay);
+  }
+
+  _flushPendingValues() {
+    // Always patch once after a committed control change. Home Assistant may
+    // deliver the global date/select state before the vehicle sensor states;
+    // later hass-setter calls remain unblocked and patch again when those
+    // sensor states arrive. This prevents a focused control from pinning stale
+    // selected-period values indefinitely.
+    this._renderPending = false;
+    if (this._domBuilt && this._structureSignature() === this._lastStructureSignature) {
+      this._updateValues();
+      this._lastStateSignature = this._stateSignature();
+    } else {
+      this._renderFull();
+    }
   }
 
   _wireControlInteraction(el) {
@@ -626,42 +636,49 @@ class CardataAnalyticsCard extends HTMLElement {
 
     if (presetEl && preset) {
       presetEl.addEventListener("change", async (ev) => {
-        this._beginControlInteraction();
+        // The native dropdown has already committed/closed when change fires.
+        // Release the interaction guard immediately so the vehicle sensor
+        // state changes produced by the service call can patch the card even
+        // while the SELECT itself keeps focus.
+        this._controlInteraction = false;
+        const option = ev.target.value;
         try {
           await this._hass.callService("select", "select_option", {
             entity_id: preset,
-            option: ev.target.value,
+            option,
           });
         } finally {
-          this._finishControlInteraction(200);
+          this._flushPendingValues();
         }
       });
     }
 
     if (fromEl && from) {
       fromEl.addEventListener("change", async (ev) => {
-        this._beginControlInteraction();
+        this._controlInteraction = false;
+        const date = ev.target.value;
         try {
           await this._hass.callService("date", "set_value", {
             entity_id: from,
-            date: ev.target.value,
+            date,
           });
         } finally {
-          this._finishControlInteraction(200);
+          this._flushPendingValues();
         }
       });
     }
 
     if (toEl && to) {
       toEl.addEventListener("change", async (ev) => {
-        this._beginControlInteraction();
+        this._controlInteraction = false;
+        const date = ev.target.value;
         try {
           await this._hass.callService("date", "set_value", {
             entity_id: to,
-            date: ev.target.value,
+            date,
           });
         } finally {
-          this._finishControlInteraction(200);
+          this._flushPendingValues();
         }
       });
     }

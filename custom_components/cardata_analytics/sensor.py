@@ -318,6 +318,7 @@ class CardataAnalyticsSensor(SensorEntity):
                     "history_backend": "daily_ledger",
                     "daily_history_schema": self.runtime.data.get("daily_history_schema"),
                     "daily_history_last_repair": self.runtime.data.get("daily_history_last_repair"),
+                    "daily_history_last_recovery": self.runtime.data.get("daily_history_last_recovery"),
                     "daily_history_days": len(self.runtime.data.get("daily_history", {})),
                     "daily_history_first": (
                         min(self.runtime.data.get("daily_history", {}))

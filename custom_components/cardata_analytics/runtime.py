@@ -33,7 +33,7 @@ from .controller import GlobalRangeController
 _LOGGER = logging.getLogger(__name__)
 
 PERIODS = ("day", "week", "month", "year")
-DAILY_HISTORY_SCHEMA = 2
+DAILY_HISTORY_SCHEMA = 3
 
 
 def _float_state(hass: HomeAssistant, entity_id: str | None) -> float | None:
@@ -273,6 +273,7 @@ class VehicleRuntime:
                     # were intended as complete. New restart-estimate entries can
                     # deliberately mark a day incomplete.
                     "complete": values.get("complete", True) is not False,
+                    "recovered_from": values.get("recovered_from"),
                 }
 
         self.data = {
@@ -329,6 +330,7 @@ class VehicleRuntime:
 
         self._rollover(now, mileage)
         self._repair_previous_day_from_existing_counters(now)
+        self._recover_daily_history_from_period_aggregates(now, mileage)
         await self.store.async_save(self.data)
 
         tracked = [self.entry.data[CONF_SOC_ENTITY], self.entry.data[CONF_MILEAGE_ENTITY]]
@@ -535,6 +537,7 @@ class VehicleRuntime:
             "km": round(distance, 6) if distance is not None else None,
             "source": source,
             "complete": bool(complete and distance is not None),
+            "recovered_from": None,
         }
         previous = self.data.setdefault("daily_history", {}).get(key)
         if previous == value:
@@ -588,6 +591,7 @@ class VehicleRuntime:
             "km": round(previous_km, 6),
             "source": "repair_0.1.11",
             "complete": True,
+            "recovered_from": None,
         }
         history = self.data.setdefault("daily_history", {})
         previous = history.get(key)
@@ -607,6 +611,219 @@ class VehicleRuntime:
             previous,
         )
         return True
+
+    @staticmethod
+    def _calendar_period_start(period: str, day: date) -> date:
+        """Return the local calendar start date for a current aggregate bucket."""
+        if period == "week":
+            return day - timedelta(days=day.weekday())
+        if period == "month":
+            return day.replace(day=1)
+        if period == "year":
+            return day.replace(month=1, day=1)
+        return day
+
+    def _recover_daily_history_from_period_aggregates(
+        self, now: datetime, mileage: float | None
+    ) -> bool:
+        """Recover exactly one ambiguous historical day from aggregate counters.
+
+        This is deliberately generic and conservative. Manufacturer/cloud source
+        outages or an interrupted Home Assistant midnight rollover can leave one
+        completed day missing, incomplete, or incorrectly stored as 0/0. While
+        that day is still inside the current Week/Month/Year bucket, the aggregate
+        counters contain enough information to recover it *only when every other
+        historical day in the same bucket is already known*.
+
+        The residual is:
+
+            current aggregate - today's live value - all known completed days
+
+        Recovery is performed only when there is exactly one unresolved day and
+        the residual is non-negative. With two or more unresolved days the values
+        cannot be distributed safely, so nothing is guessed.
+        """
+        if mileage is None:
+            mileage = self.current_mileage
+        if mileage is None:
+            return False
+
+        today = now.date()
+        yesterday = today - timedelta(days=1)
+        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        tracking_date = self._tracking_started_at.astimezone(tz).date()
+        history = self.data.setdefault("daily_history", {})
+        periods = self.data.get("periods", {})
+
+        # Today's live contribution is part of every current Week/Month/Year
+        # aggregate and therefore must be removed before deriving historical
+        # residuals.
+        day_data = periods.get("day", {})
+        try:
+            today_kwh = max(0.0, float(day_data.get("kwh", 0.0)))
+        except (TypeError, ValueError):
+            today_kwh = 0.0
+        today_start_mileage = day_data.get("start_mileage")
+        try:
+            today_km = (
+                max(0.0, float(mileage) - float(today_start_mileage))
+                if today_start_mileage is not None
+                else 0.0
+            )
+        except (TypeError, ValueError):
+            today_km = 0.0
+
+        epsilon = 1e-6
+        changed = False
+
+        # Prefer the shortest aggregate because it makes a recovery assumption
+        # as narrow as possible. Month/year are fallbacks when the missing day is
+        # no longer inside the current week.
+        for period in ("week", "month", "year"):
+            pdata = periods.get(period, {})
+            if not isinstance(pdata, dict) or pdata.get("id") != _period_id(period, now):
+                continue
+
+            start_mileage = pdata.get("start_mileage")
+            if start_mileage is None:
+                continue
+            try:
+                aggregate_km = max(0.0, float(mileage) - float(start_mileage))
+                aggregate_kwh = max(0.0, float(pdata.get("kwh", 0.0)))
+            except (TypeError, ValueError):
+                continue
+
+            period_start = max(self._calendar_period_start(period, today), tracking_date)
+            if period_start > yesterday:
+                continue
+
+            known_km = 0.0
+            known_kwh = 0.0
+            unresolved: list[date] = []
+            day = period_start
+            while day <= yesterday:
+                key = day.isoformat()
+                item = history.get(key)
+                if not isinstance(item, dict):
+                    unresolved.append(day)
+                    day += timedelta(days=1)
+                    continue
+
+                km_raw = item.get("km")
+                try:
+                    km_value = float(km_raw) if km_raw is not None else None
+                    kwh_value = float(item.get("kwh", 0.0))
+                except (TypeError, ValueError):
+                    unresolved.append(day)
+                    day += timedelta(days=1)
+                    continue
+
+                valid = (
+                    km_value is not None
+                    and math.isfinite(km_value)
+                    and math.isfinite(kwh_value)
+                    and km_value >= 0
+                    and kwh_value >= 0
+                )
+                explicitly_incomplete = item.get("complete", True) is False
+                zero_zero = (
+                    valid
+                    and km_value is not None
+                    and abs(km_value) <= epsilon
+                    and abs(kwh_value) <= epsilon
+                )
+
+                # A complete 0/0 day is normally legitimate. Treat it as a repair
+                # candidate only when the aggregate later proves that activity is
+                # missing from the ledger; this check is finalized below.
+                if not valid or explicitly_incomplete:
+                    unresolved.append(day)
+                elif zero_zero:
+                    unresolved.append(day)
+                else:
+                    known_km += km_value
+                    known_kwh += kwh_value
+                day += timedelta(days=1)
+
+            if len(unresolved) != 1:
+                continue
+
+            historical_target_km = max(0.0, aggregate_km - today_km)
+            historical_target_kwh = max(0.0, aggregate_kwh - today_kwh)
+            residual_km = historical_target_km - known_km
+            residual_kwh = historical_target_kwh - known_kwh
+
+            # Negative residuals mean the aggregate and ledger do not form a
+            # deterministic equation (for example after a counter reset). Never
+            # repair in that case.
+            if residual_km < -0.01 or residual_kwh < -0.01:
+                continue
+            residual_km = max(0.0, residual_km)
+            residual_kwh = max(0.0, residual_kwh)
+
+            recovery_day = unresolved[0]
+            key = recovery_day.isoformat()
+            previous = history.get(key)
+
+            # If the only unresolved entry is a stored 0/0 day and the aggregate
+            # also leaves a 0/0 residual, there is nothing to repair.
+            if (
+                isinstance(previous, dict)
+                and previous.get("complete", True) is not False
+                and previous.get("km") is not None
+            ):
+                try:
+                    old_km = float(previous.get("km"))
+                    old_kwh = float(previous.get("kwh", 0.0))
+                except (TypeError, ValueError):
+                    old_km = old_kwh = math.nan
+                if (
+                    math.isfinite(old_km)
+                    and math.isfinite(old_kwh)
+                    and abs(old_km) <= epsilon
+                    and abs(old_kwh) <= epsilon
+                    and residual_km <= epsilon
+                    and residual_kwh <= epsilon
+                ):
+                    continue
+
+            repaired = {
+                "kwh": round(residual_kwh, 6),
+                "km": round(residual_km, 6),
+                "source": "aggregate_recovery",
+                "complete": True,
+                "recovered_from": period,
+            }
+            if previous == repaired:
+                continue
+
+            history[key] = repaired
+            self.data["daily_history_schema"] = DAILY_HISTORY_SCHEMA
+            self.data["daily_history_last_repair"] = dt_util.utcnow().isoformat()
+            self.data["daily_history_last_recovery"] = {
+                "date": key,
+                "period": period,
+                "km": repaired["km"],
+                "kwh": repaired["kwh"],
+            }
+            _LOGGER.warning(
+                "Recovered historical day for %s from %s aggregate: %s = %.3f km / %.3f kWh "
+                "(previous ledger entry: %s)",
+                self.entry.title,
+                period,
+                key,
+                residual_km,
+                residual_kwh,
+                previous,
+            )
+            changed = True
+
+            # A successful recovery changes the equations for longer buckets;
+            # recompute them from the updated history but do not recover another
+            # day in the same pass. This keeps each repair deterministic.
+            break
+
+        return changed
 
     def _rollover(self, now: datetime, mileage: float | None) -> bool:
         changed = False
@@ -985,6 +1202,7 @@ class VehicleRuntime:
 
         mileage = self.current_mileage
         changed = self._rollover(now, mileage) or remembered_mileage
+        changed = self._recover_daily_history_from_period_aggregates(now, mileage) or changed
 
         if entity_id == self.entry.data[CONF_SOC_ENTITY]:
             old_state = event.data.get("old_state")
@@ -1028,11 +1246,20 @@ class VehicleRuntime:
         self.hass.async_create_task(self._async_handle_midnight(now))
 
     async def _async_handle_midnight(self, now: datetime) -> None:
-        self._rollover(now, self.current_mileage)
-        await self.store.async_save(self.data)
+        mileage = self.current_mileage
+        changed = self._rollover(now, mileage)
+        changed = self._recover_daily_history_from_period_aggregates(now, mileage) or changed
+        if changed:
+            await self.store.async_save(self.data)
         async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))
         await self.async_refresh_custom_period()
 
     @callback
     def _async_hourly(self, now: datetime) -> None:
-        self.hass.async_create_task(self.async_refresh_custom_period())
+        self.hass.async_create_task(self._async_hourly_refresh(now))
+
+    async def _async_hourly_refresh(self, now: datetime) -> None:
+        if self._recover_daily_history_from_period_aggregates(now, self.current_mileage):
+            await self.store.async_save(self.data)
+            async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))
+        await self.async_refresh_custom_period()

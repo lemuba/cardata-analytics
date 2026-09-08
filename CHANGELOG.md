@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.14
+
+- Added generic historical-day recovery for all BEVs; this is not tied to Renault or any manufacturer.
+- If exactly one completed day inside the current week/month/year is missing, incomplete, or stored as an implausible 0/0 while the aggregate counters contain an unassigned residual, Cardata Analytics reconstructs that day deterministically.
+- Recovery uses the shortest available aggregate bucket first (week, then month, then year) and never distributes values when two or more days are ambiguous.
+- Recovered ledger entries are marked with `source: aggregate_recovery` and `recovered_from` provenance.
+- Recovery is retried at startup, after relevant source updates, at midnight, and during the hourly maintenance refresh, allowing a day to be repaired when an upstream cloud integration comes back later.
+- Added `daily_history_last_recovery` diagnostics to selected-period sensor attributes.
+- Bumped the daily-history schema to version 3 while preserving existing ledger data.
+
 
 ## 0.1.13
 
