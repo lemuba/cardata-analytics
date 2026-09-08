@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.17
+
+- Fix the shared comparison-range controller being created more than once when Home Assistant sets up several Cardata Analytics config entries concurrently.
+- All vehicle runtimes and the global From/To/preset entities now use the exact same controller instance.
+- Date and select platforms now use the controller attached to their own global config entry instead of looking it up again in `hass.data`.
+- This fixes selected-period values appearing stuck on one vehicle (for example today's 59 km) while another vehicle remains at 0 km after changing the global range.
+
 ## 0.1.16
 
 - Fixed per-vehicle comparison-range coverage so every requested historical calendar day must exist in that vehicle's daily ledger.

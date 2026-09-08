@@ -23,6 +23,7 @@ VEHICLE_GENERIC_BEV = "bev"
 SIGNAL_UPDATE = f"{DOMAIN}_update_{{}}"
 SIGNAL_GLOBAL_RANGE_UPDATE = f"{DOMAIN}_global_range_update"
 DATA_CONTROLLER = "controller"
+DATA_CONTROLLER_SETUP_TASK = "controller_setup_task"
 DATA_RUNTIMES = "runtimes"
 DATA_GLOBAL_ENTRY_PENDING = "global_entry_pending"
 

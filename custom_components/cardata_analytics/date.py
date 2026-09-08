@@ -11,7 +11,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DATA_CONTROLLER, DOMAIN, SIGNAL_GLOBAL_RANGE_UPDATE
+from .const import DOMAIN, SIGNAL_GLOBAL_RANGE_UPDATE
 from .controller import GlobalRangeController
 
 
@@ -21,7 +21,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Create the shared pair of date entities on the dedicated global entry."""
-    controller: GlobalRangeController = hass.data[DOMAIN][DATA_CONTROLLER]
+    controller: GlobalRangeController = entry.runtime_data
     async_add_entities(
         [
             CardataAnalyticsGlobalDate(controller, "range_from", "Cardata Analytics Vergleichszeitraum von"),

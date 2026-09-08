@@ -20,6 +20,7 @@ from homeassistant.core import HomeAssistant
 from .const import (
     CONF_ENTRY_KIND,
     DATA_CONTROLLER,
+    DATA_CONTROLLER_SETUP_TASK,
     DATA_GLOBAL_ENTRY_PENDING,
     DATA_RUNTIMES,
     DOMAIN,
@@ -33,7 +34,7 @@ _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
 FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.16"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.17"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
 
@@ -124,18 +125,50 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
             "the analytics backend will continue to run"
         )
     domain_data[DATA_FRONTEND_REGISTERED] = True
+
+    # Create the shared comparison controller during integration setup. Config
+    # entries can be set up concurrently by Home Assistant; without a guarded
+    # singleton, different vehicle entries could accidentally keep different
+    # controller instances and therefore different From/To ranges.
+    await _async_get_controller(hass)
     return True
 
 
 async def _async_get_controller(hass: HomeAssistant) -> GlobalRangeController:
-    """Return the integration-wide comparison-period controller."""
+    """Return the one fully initialized comparison-period controller.
+
+    Home Assistant may call ``async_setup_entry`` for several config entries at
+    the same time. Earlier versions created the controller only after awaiting
+    its storage load, which allowed two or more setup tasks to create separate
+    controller objects. The global date/select entities could then update one
+    object while a vehicle runtime continued reading another one.
+
+    Store and await a single initialization task so every entry receives the
+    exact same controller instance.
+    """
     domain_data = hass.data.setdefault(DOMAIN, {})
     controller = domain_data.get(DATA_CONTROLLER)
-    if controller is None:
-        controller = GlobalRangeController(hass)
-        await controller.async_setup()
-        domain_data[DATA_CONTROLLER] = controller
-    return controller
+    if controller is not None:
+        return controller
+
+    setup_task = domain_data.get(DATA_CONTROLLER_SETUP_TASK)
+    if setup_task is None:
+        async def _setup_controller() -> GlobalRangeController:
+            shared = GlobalRangeController(hass)
+            await shared.async_setup()
+            domain_data[DATA_CONTROLLER] = shared
+            return shared
+
+        setup_task = hass.async_create_task(_setup_controller())
+        domain_data[DATA_CONTROLLER_SETUP_TASK] = setup_task
+
+    try:
+        return await setup_task
+    finally:
+        # Keep only the initialized controller. If setup failed, removing the
+        # task allows a later setup attempt to retry cleanly.
+        if domain_data.get(DATA_CONTROLLER_SETUP_TASK) is setup_task and setup_task.done():
+            domain_data.pop(DATA_CONTROLLER_SETUP_TASK, None)
 
 
 def _entry_kind(entry: ConfigEntry) -> str:

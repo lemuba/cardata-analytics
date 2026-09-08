@@ -10,7 +10,6 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
-    DATA_CONTROLLER,
     DOMAIN,
     RANGE_PRESET_OPTIONS,
     SIGNAL_GLOBAL_RANGE_UPDATE,
@@ -24,7 +23,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Create the shared rolling-period selector on the global entry."""
-    controller: GlobalRangeController = hass.data[DOMAIN][DATA_CONTROLLER]
+    controller: GlobalRangeController = entry.runtime_data
     async_add_entities([CardataAnalyticsRangePresetSelect(controller)])
 
 
