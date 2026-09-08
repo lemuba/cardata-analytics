@@ -97,9 +97,9 @@ The shared comparison-period device provides these presets:
 
 The end date is inclusive.
 
-For historical periods, Cardata Analytics uses Home Assistant Recorder statistics from its cumulative mileage and consumed-energy analytics sensors. The requested interval is evaluated directly from the cumulative statistics, so completed historical ranges are calculated as the exact change between the beginning and end of the selected period.
+For historical periods, Cardata Analytics uses Home Assistant Recorder statistics from its cumulative mileage and consumed-energy analytics sensors. Completed calendar days are calculated by summing Recorder hourly `change` values that fall inside the exact selected local-date interval. This keeps one historical day independent from later driving.
 
-If the selected range includes today, completed days are read from Recorder and today's values are added from the live analytics counters. This keeps the selected-period result current without waiting for the next Recorder statistics run. For example, a range covering yesterday and today is calculated as **yesterday's recorded delta + today's live delta**.
+If the selected range includes today, completed days are read from Recorder and today's values are added from the live analytics counters. Today's counters are never added to a range that ends before today. For example, a range covering yesterday and today is calculated as **yesterday's recorded delta + today's live delta**, while selecting only yesterday returns only yesterday's recorded delta.
 
 ### Temporary source outages
 

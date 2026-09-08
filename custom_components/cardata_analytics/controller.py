@@ -162,11 +162,15 @@ class GlobalRangeController:
         one vehicle does not serialize the others.
         """
         await self._save()
-        async_dispatcher_send(self.hass, SIGNAL_GLOBAL_RANGE_UPDATE)
 
+        # Clear vehicle results before publishing the new date controls. This
+        # prevents the frontend from briefly pairing a new range with values
+        # calculated for the previous range.
         runtimes = list(self._runtimes.values())
         for runtime in runtimes:
             runtime.invalidate_custom_period()
+
+        async_dispatcher_send(self.hass, SIGNAL_GLOBAL_RANGE_UPDATE)
 
         refreshes = [runtime.async_refresh_custom_period() for runtime in runtimes]
         if refreshes:

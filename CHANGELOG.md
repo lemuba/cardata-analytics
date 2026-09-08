@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.9
+
+- Fixed selected-period values sometimes remaining on the previous date range after changing the comparison dates.
+- Replaced the boolean/pending refresh guard with a serialized `asyncio.Lock`, so a range change waits for the current Recorder query and then recalculates the latest range before the service call completes.
+- Added a range-generation token so an older Recorder query can never commit its result after a newer range selection, even if the same dates are selected again later.
+- Historical completed days are now calculated by summing Home Assistant Recorder hourly `change` rows inside the exact local-calendar interval instead of using a single summary delta.
+- This specifically fixes a first-tracking-day edge case where selecting Yesterday could still show Yesterday + Today (for example 71 km instead of 12 km).
+- Today's live counters remain separate and are only added when today is actually inside the selected range.
+- The global date controller now clears vehicle range results before publishing new date values, preventing a brief new-date/old-value mismatch in the dashboard.
+- Kept the persistent last-known odometer fallback introduced in 0.1.8 for temporary manufacturer/cloud outages.
+
 ## 0.1.8
 
 - Keep odometer-based analytics usable during temporary manufacturer/cloud outages that expose the configured mileage source as `unavailable`.
