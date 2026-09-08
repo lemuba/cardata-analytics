@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.15";
+const CARD_VERSION = "0.1.16";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -419,9 +419,10 @@ class CardataAnalyticsCard extends HTMLElement {
     } else if (status === "source_unavailable") {
       text = "Zeitraum kann aktuell nicht vollständig ausgewertet werden – der Kilometerstand ist nicht verfügbar.";
     } else if (status === "missing_daily_history") {
+      const days = expectedDays > 0 ? ` (${coveredDays}/${expectedDays} historische Tage vorhanden)` : "";
       text = availableFrom
-        ? `Zeitraum nicht vollständig auswertbar · einzelne Tagesdaten fehlen (Tracking ab ${availableFrom}).`
-        : "Zeitraum nicht vollständig auswertbar · einzelne Tagesdaten fehlen.";
+        ? `Zeitraum nicht vollständig auswertbar · Analytics-Daten verfügbar ab ${availableFrom}${days}.`
+        : `Zeitraum nicht vollständig auswertbar · einzelne Tagesdaten fehlen${days}.`;
     } else if (status === "no_history" || status === "calculation_error") {
       text = availableFrom
         ? `Zeitraum nicht vollständig auswertbar · Analytics-Daten verfügbar ab ${availableFrom}.`

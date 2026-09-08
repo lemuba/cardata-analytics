@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.16
+
+- Fixed per-vehicle comparison-range coverage so every requested historical calendar day must exist in that vehicle's daily ledger.
+- Coverage no longer trusts the stored config-entry/tracking timestamp as proof that historical data exists. This fixes long ranges being shown as complete for some vehicles while another vehicle correctly reported missing history.
+- For a range such as 02.09-08.09 with only 07.09 stored, all vehicles now report the range as incomplete and expose no misleading full-range value.
+- `historical_days_expected` and `historical_days_covered` now refer to the complete requested historical part of the selected range for every vehicle.
+- `coverage_available_from` is derived from the first actually complete daily-ledger entry when available.
+- Improved the dashboard warning for missing daily history to show the available-from date and covered/expected historical-day count.
+
 ## 0.1.15
 
 - Fix duplicate current-day distance while an odometer source is unavailable.

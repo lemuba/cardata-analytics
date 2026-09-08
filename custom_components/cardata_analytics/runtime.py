@@ -1123,12 +1123,10 @@ class VehicleRuntime:
             )
             return
 
-        effective_start_date = max(requested_from, tracking_date)
         effective_end_date = min(requested_to, today)
-        extends_before_tracking = requested_from < tracking_date
         extends_into_future = requested_to > today
 
-        if effective_start_date > effective_end_date:
+        if requested_from > effective_end_date:
             self._set_custom_values(
                 None,
                 None,
@@ -1138,9 +1136,14 @@ class VehicleRuntime:
             )
             return
 
-        # Completed local days are immutable ledger entries.
-        historical_end = min(effective_end_date, today - timedelta(days=1))
-        historical_needed = effective_start_date <= historical_end
+        # Coverage is based on the actual per-day ledger, not on the config-entry
+        # creation/tracking timestamp.  Every historical calendar day requested
+        # by the user must exist as a complete ledger entry.  This keeps coverage
+        # behavior identical for every vehicle and prevents an older or migrated
+        # tracking timestamp from making a long range look complete when only one
+        # historical day is actually present.
+        requested_historical_end = min(requested_to, today - timedelta(days=1))
+        historical_needed = requested_from <= requested_historical_end
         historical_energy = 0.0
         historical_distance = 0.0
         covered_historical_days = 0
@@ -1151,20 +1154,41 @@ class VehicleRuntime:
                 historical_distance,
                 covered_historical_days,
                 missing_days,
-            ) = self._daily_history_sum(effective_start_date, historical_end)
+            ) = self._daily_history_sum(requested_from, requested_historical_end)
 
-        requested_historical_end = min(requested_to, today - timedelta(days=1))
         expected_historical_days = (
             (requested_historical_end - requested_from).days + 1
-            if requested_from <= requested_historical_end
+            if historical_needed
             else 0
         )
         historical_complete = not historical_needed or not missing_days
 
-        # Today is never taken from the ledger.  It is calculated from the live
+        # Derive the first actually available historical day from the ledger.
+        # Fall back to the tracking date when there is no completed historical
+        # day yet (for example on the installation day).
+        available_from = tracking_date
+        history = self.data.get("daily_history", {})
+        if isinstance(history, dict):
+            available_dates: list[date] = []
+            for key, item in history.items():
+                if not isinstance(item, dict) or item.get("complete", True) is False:
+                    continue
+                if item.get("km") is None:
+                    continue
+                try:
+                    parsed = date.fromisoformat(key)
+                    float(item.get("kwh", 0.0))
+                    float(item.get("km"))
+                except (TypeError, ValueError):
+                    continue
+                available_dates.append(parsed)
+            if available_dates:
+                available_from = min(available_dates)
+
+        # Today is never taken from the ledger. It is calculated from the live
         # Day bucket and included only when today's date is inside the requested
         # interval.
-        include_today = effective_start_date <= today <= effective_end_date
+        include_today = requested_from <= today <= effective_end_date
         live_energy = 0.0
         live_distance: float | None = 0.0
         live_complete = True
@@ -1199,16 +1223,13 @@ class VehicleRuntime:
             )
 
         coverage_complete = (
-            not extends_before_tracking
-            and not extends_into_future
+            not extends_into_future
             and historical_complete
             and live_complete
         )
 
         if coverage_complete:
             coverage_status = "complete"
-        elif extends_before_tracking:
-            coverage_status = "partial"
         elif missing_days:
             coverage_status = "missing_daily_history"
         elif include_today and not live_complete:
@@ -1219,13 +1240,13 @@ class VehicleRuntime:
             coverage_status = "partial"
 
         effective_from = datetime.combine(
-            effective_start_date, time.min, tzinfo=tz
+            max(requested_from, available_from), time.min, tzinfo=tz
         )
         self._set_custom_values(
             total_energy,
             total_distance,
             effective_from=effective_from,
-            available_from=tracking_date,
+            available_from=available_from,
             expected_historical_days=expected_historical_days,
             covered_historical_days=covered_historical_days,
             coverage_complete=coverage_complete,
