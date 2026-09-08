@@ -220,9 +220,35 @@ class VehicleRuntime:
                 else dt_util.utcnow()
             )
 
+        raw_daily_history = stored.get("daily_history", {})
+        daily_history: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_daily_history, dict):
+            for day_key, values in raw_daily_history.items():
+                if not isinstance(day_key, str) or not isinstance(values, dict):
+                    continue
+                try:
+                    date.fromisoformat(day_key)
+                except ValueError:
+                    continue
+                try:
+                    kwh = float(values.get("kwh", 0.0))
+                except (TypeError, ValueError):
+                    kwh = 0.0
+                km_raw = values.get("km")
+                try:
+                    km = float(km_raw) if km_raw is not None else None
+                except (TypeError, ValueError):
+                    km = None
+                daily_history[day_key] = {
+                    "kwh": max(0.0, kwh),
+                    "km": max(0.0, km) if km is not None else None,
+                    "source": str(values.get("source") or "stored"),
+                }
+
         self.data = {
             "total_kwh": float(stored.get("total_kwh", 0.0)),
             "periods": stored.get("periods", {}),
+            "daily_history": daily_history,
             "tracking_started_at": self._tracking_started_at.isoformat(),
             "last_valid_mileage": self._last_valid_mileage,
             "last_valid_mileage_at": (
@@ -247,7 +273,25 @@ class VehicleRuntime:
                 "start_mileage": current.get("start_mileage", mileage),
                 "kwh": float(current.get("kwh", 0.0)),
             }
+
+        # If Home Assistant was restarted after midnight, the stored Day bucket
+        # can still belong to yesterday. Archive it before resetting the period.
+        # The last persisted odometer is preferred here so distance travelled while
+        # Home Assistant was offline is not silently assigned to the old day.
+        day_data = self.data["periods"].get("day", {})
+        old_day_id = day_data.get("id")
+        current_day_id = _period_id("day", now)
+        if isinstance(old_day_id, str) and old_day_id != current_day_id:
+            archive_end_mileage = self._last_valid_mileage
+            self._archive_day_period(
+                old_day_id,
+                day_data,
+                archive_end_mileage,
+                source="rollover_restore",
+            )
+
         self._rollover(now, mileage)
+        self._migrate_previous_day_from_existing_counters(now)
         await self.store.async_save(self.data)
 
         tracked = [self.entry.data[CONF_SOC_ENTITY], self.entry.data[CONF_MILEAGE_ENTITY]]
@@ -420,12 +464,90 @@ class VehicleRuntime:
     def range_to(self) -> date:
         return self.controller.range_to
 
+    def _archive_day_period(
+        self,
+        day_id: str,
+        period_data: dict[str, Any],
+        end_mileage: float | None,
+        *,
+        source: str = "runtime",
+    ) -> bool:
+        """Persist one completed local calendar day in the compact daily ledger."""
+        try:
+            day = date.fromisoformat(day_id)
+        except (TypeError, ValueError):
+            return False
+
+        try:
+            kwh = max(0.0, float(period_data.get("kwh", 0.0)))
+        except (TypeError, ValueError):
+            kwh = 0.0
+
+        start_mileage = period_data.get("start_mileage")
+        distance: float | None = None
+        if start_mileage is not None and end_mileage is not None:
+            try:
+                distance = max(0.0, float(end_mileage) - float(start_mileage))
+            except (TypeError, ValueError):
+                distance = None
+
+        key = day.isoformat()
+        value = {
+            "kwh": round(kwh, 6),
+            "km": round(distance, 6) if distance is not None else None,
+            "source": source,
+        }
+        previous = self.data.setdefault("daily_history", {}).get(key)
+        if previous == value:
+            return False
+        self.data["daily_history"][key] = value
+        return True
+
+    def _migrate_previous_day_from_existing_counters(self, now: datetime) -> bool:
+        """Backfill yesterday once when upgrading from pre-ledger releases.
+
+        Cardata Analytics 0.1.x already persisted cumulative Year/Day distance and
+        lifetime/Day energy.  When the integration itself only started yesterday,
+        their difference reconstructs that first completed day exactly without
+        relying on Recorder aggregation semantics.  This migration is deliberately
+        narrow: it never invents older daily buckets that cannot be reconstructed
+        unambiguously.
+        """
+        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        tracking_date = self._tracking_started_at.astimezone(tz).date()
+        yesterday = now.date() - timedelta(days=1)
+        key = yesterday.isoformat()
+        history = self.data.setdefault("daily_history", {})
+        if key in history or tracking_date != yesterday:
+            return False
+
+        snapshot = self.snapshot()
+        previous_kwh = max(0.0, float(self.data.get("total_kwh", 0.0)) - snapshot.period_kwh["day"])
+        previous_km = max(0.0, snapshot.period_km["year"] - snapshot.period_km["day"])
+        history[key] = {
+            "kwh": round(previous_kwh, 6),
+            "km": round(previous_km, 6),
+            "source": "migration_0.1.10",
+        }
+        _LOGGER.info(
+            "Migrated first completed day for %s: %s = %.3f km / %.3f kWh",
+            self.entry.title,
+            key,
+            previous_km,
+            previous_kwh,
+        )
+        return True
+
     def _rollover(self, now: datetime, mileage: float | None) -> bool:
         changed = False
         for period in PERIODS:
             new_id = _period_id(period, now)
             pdata = self.data["periods"][period]
             if pdata.get("id") != new_id:
+                if period == "day" and isinstance(pdata.get("id"), str):
+                    changed = self._archive_day_period(
+                        pdata["id"], pdata, mileage, source="runtime"
+                    ) or changed
                 pdata["id"] = new_id
                 pdata["start_mileage"] = mileage
                 pdata["kwh"] = 0.0
@@ -434,6 +556,39 @@ class VehicleRuntime:
                 pdata["start_mileage"] = mileage
                 changed = True
         return changed
+
+    def _daily_history_sum(
+        self, start_day: date, end_day: date
+    ) -> tuple[float, float, int, list[str]]:
+        """Return energy, distance, covered-day count and missing days."""
+        if start_day > end_day:
+            return 0.0, 0.0, 0, []
+        total_kwh = 0.0
+        total_km = 0.0
+        covered = 0
+        missing: list[str] = []
+        history = self.data.get("daily_history", {})
+        day = start_day
+        while day <= end_day:
+            key = day.isoformat()
+            item = history.get(key) if isinstance(history, dict) else None
+            if not isinstance(item, dict) or item.get("km") is None:
+                missing.append(key)
+            else:
+                try:
+                    kwh = float(item.get("kwh", 0.0))
+                    km = float(item.get("km"))
+                except (TypeError, ValueError):
+                    missing.append(key)
+                else:
+                    if math.isfinite(kwh) and math.isfinite(km):
+                        total_kwh += max(0.0, kwh)
+                        total_km += max(0.0, km)
+                        covered += 1
+                    else:
+                        missing.append(key)
+            day += timedelta(days=1)
+        return total_kwh, total_km, covered, missing
 
     def snapshot(self) -> VehicleSnapshot:
         """Return values for sensor entities."""
@@ -484,61 +639,6 @@ class VehicleRuntime:
         registry = er.async_get(self.hass)
         unique_id = f"{self.entry.entry_id}_{key}"
         return registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-
-    async def _async_historical_changes(
-        self,
-        energy_entity_id: str,
-        mileage_entity_id: str,
-        start_utc: datetime,
-        end_utc: datetime,
-    ) -> tuple[float | None, float | None]:
-        """Return exact historical deltas from Recorder hourly statistics.
-
-        Using explicit hourly ``change`` rows avoids an important edge case of
-        ``statistic_during_period()`` for an integration whose first statistic
-        was created part-way through a calendar day.  In that situation the
-        summary helper can use the sensor's accumulated statistic sum as the
-        period baseline and a historical day may accidentally include later
-        growth.  Summing only rows that belong to the requested [start, end)
-        interval keeps Yesterday, multi-day ranges and custom dates independent
-        of today's live counters.
-        """
-        recorder = get_instance(self.hass)
-        result = await recorder.async_add_executor_job(
-            statistics_during_period,
-            self.hass,
-            start_utc,
-            end_utc,
-            {energy_entity_id, mileage_entity_id},
-            "hour",
-            None,
-            {"change"},
-        )
-
-        def _sum_rows(entity_id: str) -> float | None:
-            rows = result.get(entity_id) or []
-            if not rows:
-                return None
-            total = 0.0
-            saw_numeric = False
-            for row in rows:
-                value = row.get("change")
-                if value is None:
-                    continue
-                try:
-                    numeric = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if not math.isfinite(numeric):
-                    continue
-                # Both analytics sources are monotonic totals.  Defensive
-                # clamping prevents a Recorder correction/reset from creating
-                # negative driven distance or consumed energy.
-                total += max(0.0, numeric)
-                saw_numeric = True
-            return total if saw_numeric else None
-
-        return _sum_rows(energy_entity_id), _sum_rows(mileage_entity_id)
 
     def _set_custom_values(
         self,
@@ -650,17 +750,12 @@ class VehicleRuntime:
         return True
 
     async def async_refresh_custom_period(self) -> None:
-        """Calculate the inclusive selected date range.
+        """Calculate the inclusive selected date range from the daily ledger.
 
-        Refreshes are serialized with an ``asyncio.Lock``.  A range change that
-        arrives while a Recorder query is running therefore waits for the query
-        and then recalculates the *current* dates before the controller returns.
-        This removes the previous pending-task race where the dashboard could
-        keep the numbers from the old range.
-
-        Completed historical days are calculated by summing Recorder hourly
-        ``change`` rows inside the exact local-calendar [start, end) interval.
-        If the range includes today, today's live counters are added separately.
+        Completed local calendar days are read from Cardata Analytics' own compact
+        persistent daily ledger. Today is always taken from the live Day counters.
+        This makes custom ranges deterministic and independent of Recorder
+        aggregation timing while long-term statistics remain available for graphs.
         """
         async with self._range_refresh_lock:
             requested_from = self.range_from
@@ -690,23 +785,8 @@ class VehicleRuntime:
                     )
                     return
 
-                energy_id = self._analytics_entity_id("energy_consumed_total")
-                mileage_id = self._analytics_entity_id("mileage")
-                if not energy_id or not mileage_id:
-                    self._set_custom_values_for_range(
-                        requested_from, requested_to, generation, None, None,
-                        available_from=tracking_date,
-                        coverage_complete=False,
-                        coverage_status="entities_missing",
-                    )
-                    return
-
-                # Do not invent data before Cardata Analytics started tracking
-                # this vehicle.  For an incomplete request the available overlap
-                # is retained only in partial_* diagnostic attributes.
                 effective_start_date = max(requested_from, tracking_date)
                 effective_end_date = min(requested_to, today)
-
                 extends_before_tracking = requested_from < tracking_date
                 extends_into_future = requested_to > today
 
@@ -715,14 +795,23 @@ class VehicleRuntime:
                         requested_from, requested_to, generation, None, None,
                         available_from=tracking_date,
                         coverage_complete=False,
-                        coverage_status="no_statistics",
+                        coverage_status="no_history",
                     )
                     return
 
                 historical_end = min(effective_end_date, today - timedelta(days=1))
-                historical_energy: float | None = 0.0
-                historical_distance: float | None = 0.0
-                historical_query_needed = effective_start_date <= historical_end
+                historical_needed = effective_start_date <= historical_end
+                historical_energy = 0.0
+                historical_distance = 0.0
+                covered_historical_days = 0
+                missing_days: list[str] = []
+                if historical_needed:
+                    (
+                        historical_energy,
+                        historical_distance,
+                        covered_historical_days,
+                        missing_days,
+                    ) = self._daily_history_sum(effective_start_date, historical_end)
 
                 requested_historical_end = min(requested_to, today - timedelta(days=1))
                 expected_historical_days = (
@@ -730,44 +819,12 @@ class VehicleRuntime:
                     if requested_from <= requested_historical_end
                     else 0
                 )
-                overlap_historical_days = (
-                    (historical_end - effective_start_date).days + 1
-                    if historical_query_needed
-                    else 0
-                )
-
-                if historical_query_needed:
-                    start_local = datetime.combine(
-                        effective_start_date, time.min, tzinfo=tz
-                    )
-                    end_local = datetime.combine(
-                        historical_end + timedelta(days=1), time.min, tzinfo=tz
-                    )
-                    historical_energy, historical_distance = (
-                        await self._async_historical_changes(
-                            energy_id,
-                            mileage_id,
-                            dt_util.as_utc(start_local),
-                            dt_util.as_utc(end_local),
-                        )
-                    )
-
-                historical_complete = (
-                    not historical_query_needed
-                    or (
-                        historical_energy is not None
-                        and historical_distance is not None
-                    )
-                )
-                covered_historical_days = (
-                    overlap_historical_days if historical_complete else 0
-                )
+                historical_complete = not historical_needed or not missing_days
 
                 include_today = effective_start_date <= today <= effective_end_date
-                live_energy: float | None = 0.0
+                live_energy = 0.0
                 live_distance: float | None = 0.0
                 live_complete = True
-
                 if include_today:
                     snapshot = self.snapshot()
                     live_energy = max(0.0, float(snapshot.period_kwh["day"]))
@@ -777,15 +834,11 @@ class VehicleRuntime:
                     else:
                         live_distance = max(0.0, float(snapshot.period_km["day"]))
 
-                if historical_energy is None:
-                    total_energy = live_energy if include_today else None
-                else:
-                    total_energy = historical_energy + (live_energy or 0.0)
-
-                if historical_distance is None or live_distance is None:
+                total_energy: float | None = historical_energy + (live_energy if include_today else 0.0)
+                if live_distance is None:
                     total_distance = None
                 else:
-                    total_distance = historical_distance + live_distance
+                    total_distance = historical_distance + (live_distance if include_today else 0.0)
 
                 coverage_complete = (
                     not extends_before_tracking
@@ -798,8 +851,8 @@ class VehicleRuntime:
                     coverage_status = "complete"
                 elif extends_before_tracking:
                     coverage_status = "partial"
-                elif not historical_complete:
-                    coverage_status = "no_statistics"
+                elif missing_days:
+                    coverage_status = "missing_daily_history"
                 elif include_today and not live_complete:
                     coverage_status = "source_unavailable"
                 elif extends_into_future:
@@ -810,7 +863,6 @@ class VehicleRuntime:
                 effective_from = datetime.combine(
                     effective_start_date, time.min, tzinfo=tz
                 )
-
                 self._set_custom_values_for_range(
                     requested_from,
                     requested_to,
@@ -833,13 +885,9 @@ class VehicleRuntime:
                     requested_to,
                 )
                 self._set_custom_values_for_range(
-                    requested_from,
-                    requested_to,
-                    generation,
-                    None,
-                    None,
+                    requested_from, requested_to, generation, None, None,
                     coverage_complete=False,
-                    coverage_status="recorder_error",
+                    coverage_status="calculation_error",
                 )
             finally:
                 async_dispatcher_send(
@@ -905,8 +953,8 @@ class VehicleRuntime:
         self.hass.async_create_task(self._async_handle_midnight(now))
 
     async def _async_handle_midnight(self, now: datetime) -> None:
-        if self._rollover(now, self.current_mileage):
-            await self.store.async_save(self.data)
+        self._rollover(now, self.current_mileage)
+        await self.store.async_save(self.data)
         async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))
         await self.async_refresh_custom_period()
 

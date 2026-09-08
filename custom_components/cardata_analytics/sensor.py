@@ -315,6 +315,18 @@ class CardataAnalyticsSensor(SensorEntity):
                     ),
                     "historical_days_expected": snapshot.custom_expected_historical_days,
                     "historical_days_covered": snapshot.custom_covered_historical_days,
+                    "history_backend": "daily_ledger",
+                    "daily_history_days": len(self.runtime.data.get("daily_history", {})),
+                    "daily_history_first": (
+                        min(self.runtime.data.get("daily_history", {}))
+                        if self.runtime.data.get("daily_history")
+                        else None
+                    ),
+                    "daily_history_last": (
+                        max(self.runtime.data.get("daily_history", {}))
+                        if self.runtime.data.get("daily_history")
+                        else None
+                    ),
                     "mileage_source_available": self.runtime.mileage_source_available,
                     "using_last_known_mileage": self.runtime.using_last_known_mileage,
                     "mileage_last_valid_at": (

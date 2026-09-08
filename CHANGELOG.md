@@ -1,16 +1,14 @@
 # Changelog
 
-## 0.1.11
-
-- Fixed a vehicle's "Gewählter Zeitraum" (selected period) sensors sometimes staying frozen on an outdated result (or `unknown`, for a brand-new vehicle) instead of reflecting the currently selected comparison period.
-- The selected period was previously only (re)calculated on the next SoC/mileage state change, the hourly tick, midnight, or a live range change pushed by the controller to an already-registered vehicle. A vehicle whose config entry loads or reloads after the last range change — including every Home Assistant restart — never received that push and kept showing whatever was last computed, potentially for a completely different period.
-- Each vehicle now calculates its selected-period result once immediately after it registers with the shared comparison-period controller, so it always reflects the currently selected Von/Bis dates as soon as the vehicle is available, instead of waiting for an unrelated trigger.
-
 ## 0.1.10
 
-- Fixed the dashboard card getting stuck showing the previous "Gewählter Zeitraum" (selected period) values after changing the quick selection or the Von/Bis dates, until the user tapped away from the control.
-- The card's re-render guard was treating a select/date input as "still being interacted with" purely because it still had DOM focus, even after the value was committed and the backend had already finished recalculating. Native date/select controls commonly keep focus after a value change (especially in the iOS/iPadOS Companion App WebView), so incoming state updates kept being deferred indefinitely instead of being applied.
-- The guard now relies solely on the existing, deterministically-cleared interaction flag (set on pointerdown/focus, cleared on blur or once the triggering service call has resolved), so a completed range change is shown immediately instead of waiting for an unrelated blur event.
+- Replaced custom-range history calculation with a persistent per-vehicle daily ledger.
+- Custom date ranges no longer depend on Recorder aggregation timing or hourly statistic boundaries.
+- Completed days are archived as exact daily distance and energy totals; the current day still uses live counters.
+- Added a one-time migration for installations that started on the previous day, reconstructing yesterday from existing Year/Day distance and lifetime/Day energy counters.
+- Preserved long-term statistics sensors for graphs and independent Home Assistant history.
+- Added daily-ledger diagnostics to selected-period sensor attributes (`history_backend`, stored day count, first/last stored date).
+- Kept the 0.1.9 generation/lock protection against stale range refreshes.
 
 ## 0.1.9
 

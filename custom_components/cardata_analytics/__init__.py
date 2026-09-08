@@ -33,7 +33,7 @@ _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
 FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.9"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.10"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
 
@@ -185,16 +185,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtimes[entry.entry_id] = runtime
     controller.register_runtime(entry.entry_id, runtime)
     entry.runtime_data = runtime
-
-    # Without this, a vehicle's "Gewählter Zeitraum" sensors stay at whatever
-    # was last computed (or unknown, for a brand-new vehicle) until the next
-    # natural trigger: an SoC/mileage state change, the hourly tick, midnight,
-    # or a future range change pushed by the controller. That leaves a stale
-    # or missing selected-period result after every Home Assistant restart,
-    # after adding a vehicle, and after reloading a vehicle's config entry
-    # while a non-default comparison period is already selected. Calculating
-    # once here immediately after registration closes that gap.
-    hass.async_create_task(runtime.async_refresh_custom_period())
 
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 

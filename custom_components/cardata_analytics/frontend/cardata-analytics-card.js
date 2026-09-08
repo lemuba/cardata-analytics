@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.11";
+const CARD_VERSION = "0.1.10";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -83,16 +83,9 @@ class CardataAnalyticsCard extends HTMLElement {
   }
 
   _isControlInteractionActive() {
-    // Deliberately does NOT also treat a merely-focused select/date input as
-    // "interacting". Native date/select controls keep DOM focus after a
-    // value is committed (change fires, but blur may not, especially in the
-    // iOS/iPadOS WebView). If we kept blocking renders on focus alone, a
-    // range change could finish on the backend while the card stays stuck
-    // showing the previous range until the user taps away. The explicit
-    // _controlInteraction flag (set on pointerdown/focus, cleared on blur or
-    // once the triggering service call has resolved) is sufficient and is
-    // always cleared deterministically, so it alone is the source of truth.
-    return this._controlInteraction;
+    if (this._controlInteraction) return true;
+    const active = this.shadowRoot?.activeElement;
+    return !!active && (active.tagName === "SELECT" || active.tagName === "INPUT");
   }
 
   _beginControlInteraction() {
@@ -415,10 +408,14 @@ class CardataAnalyticsCard extends HTMLElement {
       text = "Zeitraum kann noch nicht ausgewertet werden – Analytics-Entitäten fehlen.";
     } else if (status === "source_unavailable") {
       text = "Zeitraum kann aktuell nicht vollständig ausgewertet werden – der Kilometerstand ist nicht verfügbar.";
-    } else if (status === "no_statistics" || status === "recorder_error") {
+    } else if (status === "missing_daily_history") {
+      text = availableFrom
+        ? `Zeitraum nicht vollständig auswertbar · einzelne Tagesdaten fehlen (Tracking ab ${availableFrom}).`
+        : "Zeitraum nicht vollständig auswertbar · einzelne Tagesdaten fehlen.";
+    } else if (status === "no_history" || status === "calculation_error") {
       text = availableFrom
         ? `Zeitraum nicht vollständig auswertbar · Analytics-Daten verfügbar ab ${availableFrom}.`
-        : "Zeitraum nicht vollständig auswertbar · historische Recorder-Daten fehlen.";
+        : "Zeitraum nicht vollständig auswertbar.";
     } else if (status === "partial") {
       const days = expectedDays > 0 ? ` (${coveredDays}/${expectedDays} historische Tage vorhanden)` : "";
       text = availableFrom
