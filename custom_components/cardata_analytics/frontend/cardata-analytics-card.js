@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.6";
+const CARD_VERSION = "0.1.7";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -390,9 +390,8 @@ class CardataAnalyticsCard extends HTMLElement {
 
     if (complete) return { show: false, text: "", status };
 
-    // Coverage is determined by the backend from the Recorder rows that really
-    // exist for this vehicle. Do not second-guess it here from config-entry or
-    // tracking timestamps; those can predate actual long-term statistics.
+    // Coverage is determined by the backend. The first tracked calendar day is
+    // usable; ranges starting before that date are intentionally incomplete.
     const availableFrom = this._formatCoverageDate(
       attrs.coverage_available_from || attrs.effective_data_from
       || attrs.tracking_started_at || attrs.history_complete_from

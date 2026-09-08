@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.7
+
+- Fixed selected-period calculations not updating correctly when switching between Today, Yesterday and multi-day ranges.
+- Restored interval-based Recorder aggregation with Home Assistant `statistic_during_period()` for the cumulative mileage and consumed-energy analytics sensors.
+- A range covering yesterday and today now uses yesterday's exact Recorder delta plus today's live counters (for example 12 km + 59 km = 71 km).
+- A completed historical day such as Yesterday is queried directly from Recorder and no longer depends on a reduced daily-row result.
+- Coverage is again evaluated independently from the value calculation: ranges starting before a vehicle's first tracked calendar day remain incomplete and expose only diagnostic partial values.
+- Kept stale-query protection so results from an older date selection cannot overwrite the currently selected range.
+- Added an error log entry when a selected-period Recorder query fails, making future diagnostics visible in the Home Assistant log.
+
 ## 0.1.6
 
 - Reworked custom-period aggregation to use Home Assistant Recorder daily long-term-statistics rows for both cumulative energy and mileage sensors.

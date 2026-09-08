@@ -97,11 +97,11 @@ The shared comparison-period device provides these presets:
 
 The end date is inclusive.
 
-For historical periods, Cardata Analytics uses Home Assistant Recorder long-term statistics from its cumulative mileage and consumed-energy analytics sensors. Historical aggregation is performed per calendar day. A day is considered covered only when Recorder contains valid statistics for both cumulative sensors for that vehicle.
+For historical periods, Cardata Analytics uses Home Assistant Recorder statistics from its cumulative mileage and consumed-energy analytics sensors. The requested interval is evaluated directly from the cumulative statistics, so completed historical ranges are calculated as the exact change between the beginning and end of the selected period.
 
-If any historical day inside the selected range is missing, the dashboard does **not** present the available overlap as the result for the whole requested range. The selected-period values are shown as unavailable (`—`) and the card displays a per-vehicle coverage warning. Any calculable overlap is retained only as diagnostic sensor attributes (`partial_distance_km`, `partial_energy_kwh`, `partial_average_consumption`). Additional attributes (`coverage_available_from`, `historical_days_expected`, `historical_days_covered`) make the coverage decision transparent.
+If the selected range includes today, completed days are read from Recorder and today's values are added from the live analytics counters. This keeps the selected-period result current without waiting for the next Recorder statistics run. For example, a range covering yesterday and today is calculated as **yesterday's recorded delta + today's live delta**.
 
-The current day is added from live analytics counters so a range containing today updates immediately without waiting for the next Recorder statistics run. This prevents a partial sum or only today's values from being mistaken for a complete multi-day result.
+Coverage is evaluated separately for each vehicle. The first calendar day on which Cardata Analytics tracked that vehicle is considered usable. If a requested range starts before that date, the dashboard does **not** present the available overlap as the result for the whole requested range. The selected-period values are shown as unavailable (`—`) and the card displays a per-vehicle coverage warning. Any calculable overlap is retained only as diagnostic sensor attributes (`partial_distance_km`, `partial_energy_kwh`, `partial_average_consumption`).
 
 ## Dashboard card
 
