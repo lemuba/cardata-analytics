@@ -99,7 +99,7 @@ The end date is inclusive.
 
 For reliable custom date ranges, Cardata Analytics stores one compact daily history entry per vehicle and completed local calendar day. Each entry contains only the driven distance and estimated consumed energy for that day. The current day is always read from the live analytics counters.
 
-This means a range covering yesterday and today is calculated as **yesterday's stored daily total + today's live total**, while selecting only yesterday returns only yesterday's stored daily total. The daily ledger is persistent and intentionally small, so it can retain many years of selected-range history without depending on Recorder aggregation timing.
+This means a range covering yesterday and today is calculated as **yesterday's stored daily total + today's live total**, while selecting only yesterday returns only yesterday's stored daily total. The daily ledger is persistent and intentionally small, so it can retain many years of selected-range history without depending on Recorder aggregation timing. Selected-range sensor values are derived from the currently active date controls whenever Home Assistant reads them, so changing the range cannot leave a cached result from the previous selection behind.
 
 The ledger also tracks whether a completed day is trustworthy. If Home Assistant was offline across midnight and the exact day boundary cannot be reconstructed, that day is marked incomplete instead of silently assigning today's odometer value to yesterday. For upgrades from early 0.1.x releases, Cardata Analytics can repair the first completed tracking day when it can be derived unambiguously from the integration lifetime counters.
 

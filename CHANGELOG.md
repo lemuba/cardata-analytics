@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.12
+
+- Reworked selected-period calculation to be synchronous and derived from the current `From`/`To` dates on every sensor snapshot.
+- Removed the cached/asynchronous selected-range result path that could leave yesterday's values visible after the date controls changed.
+- Completed days still come from the persistent daily ledger; today is added only when today is inside the selected interval.
+- This makes `07.09 -> 07.09`, `08.09 -> 08.09`, and `07.09 -> 08.09` deterministic without Recorder timing or stale refresh races.
+
 ## 0.1.11
 
 - Fixed the 0.1.10 first-day ledger migration that could persist today's distance/energy under yesterday's date after an upgrade or restart.

@@ -155,11 +155,11 @@ class GlobalRangeController:
     async def _save_and_refresh_all(self) -> None:
         """Persist the range and wait until every vehicle has recalculated it.
 
-        Waiting here is intentional.  A quick-selection service call must not
+        Waiting here is intentional. A quick-selection service call must not
         return while the global date entities already show the new range but
-        the vehicle custom-period sensors still expose the previous range.
-        All vehicle refreshes run concurrently, so the slow Recorder query of
-        one vehicle does not serialize the others.
+        vehicle entities have not yet been notified. Selected-period values are
+        derived synchronously from the daily ledger plus today's live counters,
+        so this refresh is lightweight and cannot commit an older range later.
         """
         await self._save()
 

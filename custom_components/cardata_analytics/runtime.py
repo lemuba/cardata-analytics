@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import asyncio
 import logging
 import math
 from datetime import date, datetime, time, timedelta, timezone
@@ -154,8 +153,6 @@ class VehicleRuntime:
         self._custom_covered_historical_days = 0
         self._custom_coverage_complete = False
         self._custom_coverage_status = "initializing"
-        self._range_refresh_lock = asyncio.Lock()
-        self._range_generation = 0
         self._last_valid_mileage: float | None = None
         self._last_valid_mileage_at: datetime | None = None
 
@@ -668,10 +665,19 @@ class VehicleRuntime:
         return total_kwh, total_km, covered, missing
 
     def snapshot(self) -> VehicleSnapshot:
-        """Return values for sensor entities."""
+        """Return values for sensor entities.
+
+        The selected-period values are derived synchronously from the *current*
+        global date range on every snapshot.  This is intentionally cheap: all
+        completed days live in the local daily ledger and only today's in-memory
+        counters are added.  Keeping this calculation synchronous eliminates the
+        stale-range race that existed when a previous async refresh result could
+        remain visible after the date controls had already changed.
+        """
         now = dt_util.now()
         mileage = self.current_mileage
         self._rollover(now, mileage)
+        self._recalculate_custom_period(now=now, mileage=mileage)
 
         period_kwh: dict[str, float] = {}
         period_km: dict[str, float] = {}
@@ -780,7 +786,6 @@ class VehicleRuntime:
         the public result prevents old numbers from being displayed under the
         newly selected dates while the recalculation catches up.
         """
-        self._range_generation += 1
         self._set_custom_values(
             None,
             None,
@@ -789,187 +794,180 @@ class VehicleRuntime:
         )
         async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))
 
-    def _set_custom_values_for_range(
+    def _recalculate_custom_period(
         self,
-        requested_from: date,
-        requested_to: date,
-        generation: int,
-        energy_kwh: float | None,
-        distance_km: float | None,
         *,
-        effective_from: datetime | None = None,
-        available_from: date | None = None,
-        expected_historical_days: int = 0,
-        covered_historical_days: int = 0,
-        coverage_complete: bool = False,
-        coverage_status: str = "partial",
-    ) -> bool:
-        """Commit a result only if it still belongs to the active range."""
-        if (
-            self.range_from != requested_from
-            or self.range_to != requested_to
-            or self._range_generation != generation
-        ):
-            # A newer range selection superseded this Recorder query.  The
-            # controller queues/awaits a fresh calculation under the async lock.
-            return False
+        now: datetime | None = None,
+        mileage: float | None = None,
+    ) -> None:
+        """Synchronously derive the inclusive selected range from current state.
 
+        Completed days come from the persistent daily ledger.  If the selected
+        range contains today, today's live counters are added exactly once.
+        There is no Recorder query and no cached result tied to an older range,
+        so changing From/To immediately changes the value returned by every
+        custom-period sensor snapshot.
+        """
+        now = now or dt_util.now()
+        today = now.date()
+        requested_from = self.range_from
+        requested_to = self.range_to
+        tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        tracking_date = self._tracking_started_at.astimezone(tz).date()
+
+        if requested_from > requested_to:
+            self._set_custom_values(
+                None,
+                None,
+                coverage_complete=False,
+                coverage_status="invalid_range",
+            )
+            return
+
+        if requested_from > today:
+            self._set_custom_values(
+                0.0,
+                0.0,
+                available_from=tracking_date,
+                coverage_complete=False,
+                coverage_status="future",
+            )
+            return
+
+        effective_start_date = max(requested_from, tracking_date)
+        effective_end_date = min(requested_to, today)
+        extends_before_tracking = requested_from < tracking_date
+        extends_into_future = requested_to > today
+
+        if effective_start_date > effective_end_date:
+            self._set_custom_values(
+                None,
+                None,
+                available_from=tracking_date,
+                coverage_complete=False,
+                coverage_status="no_history",
+            )
+            return
+
+        # Completed local days are immutable ledger entries.
+        historical_end = min(effective_end_date, today - timedelta(days=1))
+        historical_needed = effective_start_date <= historical_end
+        historical_energy = 0.0
+        historical_distance = 0.0
+        covered_historical_days = 0
+        missing_days: list[str] = []
+        if historical_needed:
+            (
+                historical_energy,
+                historical_distance,
+                covered_historical_days,
+                missing_days,
+            ) = self._daily_history_sum(effective_start_date, historical_end)
+
+        requested_historical_end = min(requested_to, today - timedelta(days=1))
+        expected_historical_days = (
+            (requested_historical_end - requested_from).days + 1
+            if requested_from <= requested_historical_end
+            else 0
+        )
+        historical_complete = not historical_needed or not missing_days
+
+        # Today is never taken from the ledger.  It is calculated from the live
+        # Day bucket and included only when today's date is inside the requested
+        # interval.
+        include_today = effective_start_date <= today <= effective_end_date
+        live_energy = 0.0
+        live_distance: float | None = 0.0
+        live_complete = True
+        if include_today:
+            if mileage is None:
+                mileage = self.current_mileage
+            day_data = self.data.get("periods", {}).get("day", {})
+            try:
+                live_energy = max(0.0, float(day_data.get("kwh", 0.0)))
+            except (TypeError, ValueError):
+                live_energy = 0.0
+            day_start = day_data.get("start_mileage")
+            if mileage is None or day_start is None:
+                live_distance = None
+                live_complete = False
+            else:
+                try:
+                    live_distance = max(0.0, float(mileage) - float(day_start))
+                except (TypeError, ValueError):
+                    live_distance = None
+                    live_complete = False
+
+        total_energy: float | None = historical_energy + (
+            live_energy if include_today else 0.0
+        )
+        total_distance: float | None
+        if live_distance is None:
+            total_distance = None
+        else:
+            total_distance = historical_distance + (
+                live_distance if include_today else 0.0
+            )
+
+        coverage_complete = (
+            not extends_before_tracking
+            and not extends_into_future
+            and historical_complete
+            and live_complete
+        )
+
+        if coverage_complete:
+            coverage_status = "complete"
+        elif extends_before_tracking:
+            coverage_status = "partial"
+        elif missing_days:
+            coverage_status = "missing_daily_history"
+        elif include_today and not live_complete:
+            coverage_status = "source_unavailable"
+        elif extends_into_future:
+            coverage_status = "future"
+        else:
+            coverage_status = "partial"
+
+        effective_from = datetime.combine(
+            effective_start_date, time.min, tzinfo=tz
+        )
         self._set_custom_values(
-            energy_kwh,
-            distance_km,
+            total_energy,
+            total_distance,
             effective_from=effective_from,
-            available_from=available_from,
+            available_from=tracking_date,
             expected_historical_days=expected_historical_days,
             covered_historical_days=covered_historical_days,
             coverage_complete=coverage_complete,
             coverage_status=coverage_status,
         )
-        return True
 
     async def async_refresh_custom_period(self) -> None:
-        """Calculate the inclusive selected date range from the daily ledger.
+        """Notify entities after recomputing the current selected range.
 
-        Completed local calendar days are read from Cardata Analytics' own compact
-        persistent daily ledger. Today is always taken from the live Day counters.
-        This makes custom ranges deterministic and independent of Recorder
-        aggregation timing while long-term statistics remain available for graphs.
+        This method intentionally performs no asynchronous historical query.
+        The selected-period result is derived from the daily ledger and today's
+        live counters, so it is always tied to the current controller dates.
         """
-        async with self._range_refresh_lock:
-            requested_from = self.range_from
-            requested_to = self.range_to
-            generation = self._range_generation
-
-            try:
-                now = dt_util.now()
-                today = now.date()
-                tz = dt_util.get_time_zone(self.hass.config.time_zone)
-                tracking_date = self._tracking_started_at.astimezone(tz).date()
-
-                if requested_from > requested_to:
-                    self._set_custom_values_for_range(
-                        requested_from, requested_to, generation, None, None,
-                        coverage_complete=False,
-                        coverage_status="invalid_range",
-                    )
-                    return
-
-                if requested_from > today:
-                    self._set_custom_values_for_range(
-                        requested_from, requested_to, generation, 0.0, 0.0,
-                        available_from=tracking_date,
-                        coverage_complete=False,
-                        coverage_status="future",
-                    )
-                    return
-
-                effective_start_date = max(requested_from, tracking_date)
-                effective_end_date = min(requested_to, today)
-                extends_before_tracking = requested_from < tracking_date
-                extends_into_future = requested_to > today
-
-                if effective_start_date > effective_end_date:
-                    self._set_custom_values_for_range(
-                        requested_from, requested_to, generation, None, None,
-                        available_from=tracking_date,
-                        coverage_complete=False,
-                        coverage_status="no_history",
-                    )
-                    return
-
-                historical_end = min(effective_end_date, today - timedelta(days=1))
-                historical_needed = effective_start_date <= historical_end
-                historical_energy = 0.0
-                historical_distance = 0.0
-                covered_historical_days = 0
-                missing_days: list[str] = []
-                if historical_needed:
-                    (
-                        historical_energy,
-                        historical_distance,
-                        covered_historical_days,
-                        missing_days,
-                    ) = self._daily_history_sum(effective_start_date, historical_end)
-
-                requested_historical_end = min(requested_to, today - timedelta(days=1))
-                expected_historical_days = (
-                    (requested_historical_end - requested_from).days + 1
-                    if requested_from <= requested_historical_end
-                    else 0
-                )
-                historical_complete = not historical_needed or not missing_days
-
-                include_today = effective_start_date <= today <= effective_end_date
-                live_energy = 0.0
-                live_distance: float | None = 0.0
-                live_complete = True
-                if include_today:
-                    snapshot = self.snapshot()
-                    live_energy = max(0.0, float(snapshot.period_kwh["day"]))
-                    if self.current_mileage is None:
-                        live_distance = None
-                        live_complete = False
-                    else:
-                        live_distance = max(0.0, float(snapshot.period_km["day"]))
-
-                total_energy: float | None = historical_energy + (live_energy if include_today else 0.0)
-                if live_distance is None:
-                    total_distance = None
-                else:
-                    total_distance = historical_distance + (live_distance if include_today else 0.0)
-
-                coverage_complete = (
-                    not extends_before_tracking
-                    and not extends_into_future
-                    and historical_complete
-                    and live_complete
-                )
-
-                if coverage_complete:
-                    coverage_status = "complete"
-                elif extends_before_tracking:
-                    coverage_status = "partial"
-                elif missing_days:
-                    coverage_status = "missing_daily_history"
-                elif include_today and not live_complete:
-                    coverage_status = "source_unavailable"
-                elif extends_into_future:
-                    coverage_status = "future"
-                else:
-                    coverage_status = "partial"
-
-                effective_from = datetime.combine(
-                    effective_start_date, time.min, tzinfo=tz
-                )
-                self._set_custom_values_for_range(
-                    requested_from,
-                    requested_to,
-                    generation,
-                    total_energy,
-                    total_distance,
-                    effective_from=effective_from,
-                    available_from=tracking_date,
-                    expected_historical_days=expected_historical_days,
-                    covered_historical_days=covered_historical_days,
-                    coverage_complete=coverage_complete,
-                    coverage_status=coverage_status,
-                )
-
-            except Exception:
-                _LOGGER.exception(
-                    "Failed to refresh selected period for %s (%s to %s)",
-                    self.entry.title,
-                    requested_from,
-                    requested_to,
-                )
-                self._set_custom_values_for_range(
-                    requested_from, requested_to, generation, None, None,
-                    coverage_complete=False,
-                    coverage_status="calculation_error",
-                )
-            finally:
-                async_dispatcher_send(
-                    self.hass, SIGNAL_UPDATE.format(self.entry.entry_id)
-                )
+        try:
+            self._recalculate_custom_period()
+        except Exception:
+            _LOGGER.exception(
+                "Failed to refresh selected period for %s (%s to %s)",
+                self.entry.title,
+                self.range_from,
+                self.range_to,
+            )
+            self._set_custom_values(
+                None,
+                None,
+                coverage_complete=False,
+                coverage_status="calculation_error",
+            )
+        async_dispatcher_send(
+            self.hass, SIGNAL_UPDATE.format(self.entry.entry_id)
+        )
 
     @callback
     def _async_state_changed(self, event: Event[EventStateChangedData]) -> None:
