@@ -109,6 +109,9 @@ class VehicleSnapshot:
     custom_kwh: float | None
     custom_km: float | None
     custom_avg: float | None
+    custom_partial_kwh: float | None
+    custom_partial_km: float | None
+    custom_partial_avg: float | None
     custom_ready: bool
     tracking_started_at: datetime
     history_complete_from: datetime
@@ -130,6 +133,9 @@ class VehicleRuntime:
         self._custom_kwh: float | None = None
         self._custom_km: float | None = None
         self._custom_avg: float | None = None
+        self._custom_partial_kwh: float | None = None
+        self._custom_partial_km: float | None = None
+        self._custom_partial_avg: float | None = None
         self._custom_ready = False
         self._tracking_started_at = dt_util.now()
         self._history_complete_from = dt_util.now()
@@ -161,13 +167,12 @@ class VehicleRuntime:
 
         tz = dt_util.get_time_zone(self.hass.config.time_zone)
         tracking_local = self._tracking_started_at.astimezone(tz)
-        # Historical day ranges are only considered fully covered from the
-        # first complete local day after tracking started. This is deliberately
-        # conservative: it avoids presenting the installation day as a complete
-        # 24-hour history when the integration was added part-way through it.
-        self._history_complete_from = datetime.combine(
-            tracking_local.date() + timedelta(days=1), time.min, tzinfo=tz
-        )
+        # The first calendar day on which Cardata Analytics tracked this vehicle
+        # is considered the beginning of its Analytics history.  The exact
+        # tracking timestamp remains available separately and is used as the
+        # actual Recorder query boundary, so no pre-installation samples are
+        # invented while valid installation-day driving is retained.
+        self._history_complete_from = tracking_local
 
         self.data = {
             "total_kwh": float(stored.get("total_kwh", 0.0)),
@@ -287,6 +292,9 @@ class VehicleRuntime:
             custom_kwh=self._custom_kwh,
             custom_km=self._custom_km,
             custom_avg=self._custom_avg,
+            custom_partial_kwh=self._custom_partial_kwh,
+            custom_partial_km=self._custom_partial_km,
+            custom_partial_avg=self._custom_partial_avg,
             custom_ready=self._custom_ready,
             tracking_started_at=self._tracking_started_at,
             history_complete_from=self._history_complete_from,
@@ -326,19 +334,89 @@ class VehicleRuntime:
         coverage_complete: bool = False,
         coverage_status: str = "partial",
     ) -> None:
-        """Store selected-period values, coverage metadata and derived average."""
-        self._custom_kwh = energy_kwh
-        self._custom_km = distance_km
+        """Store selected-period values and coverage metadata.
+
+        Public custom-period sensor states are only exposed when the requested
+        period is fully covered.  If only part of the requested range can be
+        evaluated, the partial result is retained in attributes for diagnostics
+        but the visible result stays unknown.  This prevents a partial sum from
+        looking like the result for the complete user-selected period.
+        """
+        partial_avg: float | None
+        if energy_kwh is not None and distance_km is not None and distance_km > 0:
+            partial_avg = energy_kwh / distance_km * 100.0
+        elif energy_kwh is not None and distance_km == 0:
+            partial_avg = 0.0
+        else:
+            partial_avg = None
+
         self._custom_effective_from = effective_from
         self._custom_coverage_complete = coverage_complete
         self._custom_coverage_status = coverage_status
-        if energy_kwh is not None and distance_km is not None and distance_km > 0:
-            self._custom_avg = energy_kwh / distance_km * 100.0
-        elif distance_km == 0:
-            self._custom_avg = 0.0
-        else:
-            self._custom_avg = None
-        self._custom_ready = energy_kwh is not None and distance_km is not None
+
+        if coverage_complete and energy_kwh is not None and distance_km is not None:
+            self._custom_kwh = energy_kwh
+            self._custom_km = distance_km
+            self._custom_avg = partial_avg
+            self._custom_partial_kwh = None
+            self._custom_partial_km = None
+            self._custom_partial_avg = None
+            self._custom_ready = True
+            return
+
+        # Incomplete/invalid ranges intentionally do not publish a normal
+        # selected-period value.  Keep the overlap result only as metadata.
+        self._custom_kwh = None
+        self._custom_km = None
+        self._custom_avg = None
+        self._custom_partial_kwh = energy_kwh
+        self._custom_partial_km = distance_km
+        self._custom_partial_avg = partial_avg
+        self._custom_ready = False
+
+    @callback
+    def invalidate_custom_period(self) -> None:
+        """Clear a result immediately when the global range changes.
+
+        Recorder queries may still be running for the previous range.  Clearing
+        the public result prevents old numbers from being displayed under the
+        newly selected dates while the recalculation catches up.
+        """
+        self._set_custom_values(
+            None,
+            None,
+            coverage_complete=False,
+            coverage_status="initializing",
+        )
+        async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))
+
+    def _set_custom_values_for_range(
+        self,
+        requested_from: date,
+        requested_to: date,
+        energy_kwh: float | None,
+        distance_km: float | None,
+        *,
+        effective_from: datetime | None = None,
+        coverage_complete: bool = False,
+        coverage_status: str = "partial",
+    ) -> bool:
+        """Commit a result only if it still belongs to the active range."""
+        if self.range_from != requested_from or self.range_to != requested_to:
+            # The user changed the dates while this Recorder query was running.
+            # Discard the stale result and guarantee one recalculation for the
+            # newest range after the current refresh leaves its lock.
+            self._range_refresh_pending = True
+            return False
+
+        self._set_custom_values(
+            energy_kwh,
+            distance_km,
+            effective_from=effective_from,
+            coverage_complete=coverage_complete,
+            coverage_status=coverage_status,
+        )
+        return True
 
     async def async_refresh_custom_period(self) -> None:
         """Calculate the selected period and report whether history is complete.
@@ -349,24 +427,26 @@ class VehicleRuntime:
 
         A selected range may start before Cardata Analytics existed. In that
         case the historical query is clamped to the exact tracking start so
-        valid driving data from the installation day is retained. The result is
-        exposed as *partial* when the requested calendar range starts earlier
-        than the available Analytics data.
+        valid driving data from the installation day is retained internally.
+        The public selected-period sensors remain unknown until the complete
+        requested date range is covered.
         """
         if self._range_refresh_lock:
             self._range_refresh_pending = True
             return
         self._range_refresh_lock = True
         self._range_refresh_pending = False
+        start_date = self.range_from
+        end_date = self.range_to
         try:
-            start_date = self.range_from
-            end_date = self.range_to
             now = dt_util.now()
             today = now.date()
             tz = dt_util.get_time_zone(self.hass.config.time_zone)
 
             if start_date > end_date:
-                self._set_custom_values(
+                self._set_custom_values_for_range(
+                    start_date,
+                    end_date,
                     None, None, coverage_complete=False, coverage_status="invalid_range"
                 )
                 return
@@ -378,7 +458,9 @@ class VehicleRuntime:
             today_start_local = datetime.combine(today, time.min, tzinfo=tz)
 
             if start_date > today:
-                self._set_custom_values(
+                self._set_custom_values_for_range(
+                    start_date,
+                    end_date,
                     0.0,
                     0.0,
                     effective_from=None,
@@ -390,7 +472,9 @@ class VehicleRuntime:
             energy_id = self._analytics_entity_id("energy_consumed_total")
             mileage_id = self._analytics_entity_id("mileage")
             if not energy_id or not mileage_id:
-                self._set_custom_values(
+                self._set_custom_values_for_range(
+                    start_date,
+                    end_date,
                     None, None, coverage_complete=False, coverage_status="entities_missing"
                 )
                 return
@@ -402,14 +486,22 @@ class VehicleRuntime:
             # is therefore the earliest usable boundary.  Coverage can still be
             # marked partial when the requested calendar range starts earlier.
             tracking_start_local = self._tracking_started_at.astimezone(tz)
+            tracking_start_date = tracking_start_local.date()
             effective_start_local = max(requested_start_local, tracking_start_local)
-            requested_extends_before_history = requested_start_local < tracking_start_local
+
+            # Coverage is evaluated at calendar-day granularity.  If tracking
+            # started at any time on 7 September, a range beginning on
+            # 7 September is allowed and is queried from the exact start time.
+            # A range beginning on 6 September is incomplete.
+            requested_extends_before_history = start_date < tracking_start_date
             requested_extends_into_future = end_date > today
 
             # No tracked Analytics interval overlaps the request and today is
             # not part of it. There is nothing reliable to aggregate yet.
             if end_date < today and effective_start_local >= requested_end_local:
-                self._set_custom_values(
+                self._set_custom_values_for_range(
+                    start_date,
+                    end_date,
                     0.0,
                     0.0,
                     effective_from=None,
@@ -434,7 +526,9 @@ class VehicleRuntime:
                     dt_util.as_utc(requested_end_local),
                 )
                 if energy_change is None or mileage_change is None:
-                    self._set_custom_values(
+                    self._set_custom_values_for_range(
+                        start_date,
+                        end_date,
                         None,
                         None,
                         effective_from=effective_start_local,
@@ -442,7 +536,9 @@ class VehicleRuntime:
                         coverage_status="no_statistics",
                     )
                 else:
-                    self._set_custom_values(
+                    self._set_custom_values_for_range(
+                        start_date,
+                        end_date,
                         energy_change,
                         mileage_change,
                         effective_from=effective_start_local,
@@ -484,9 +580,9 @@ class VehicleRuntime:
                     historical_energy = historical_energy_result
                     historical_distance = historical_distance_result
 
-            # If the requested calendar range starts before tracking began, the
-            # available values are still useful but cover only the tracked part.
-            if requested_start_local < self._tracking_started_at.astimezone(tz):
+            # If the requested calendar range starts before the first tracked
+            # calendar day, the overlap remains diagnostic-only.
+            if start_date < tracking_start_date:
                 coverage_complete = False
                 if coverage_status == "complete":
                     coverage_status = "partial"
@@ -495,7 +591,9 @@ class VehicleRuntime:
             if effective_from is None and start_date <= today <= end_date:
                 effective_from = max(self._tracking_started_at.astimezone(tz), today_start_local)
 
-            self._set_custom_values(
+            self._set_custom_values_for_range(
+                start_date,
+                end_date,
                 historical_energy + live_energy,
                 historical_distance + live_distance,
                 effective_from=effective_from,
@@ -503,9 +601,16 @@ class VehicleRuntime:
                 coverage_status=coverage_status,
             )
         except Exception:
-            self._custom_ready = False
-            self._custom_coverage_complete = False
-            self._custom_coverage_status = "recorder_error"
+            # Never leave values from the previously selected period visible
+            # after a failed refresh.
+            self._set_custom_values_for_range(
+                start_date,
+                end_date,
+                None,
+                None,
+                coverage_complete=False,
+                coverage_status="recorder_error",
+            )
         finally:
             self._range_refresh_lock = False
             async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))

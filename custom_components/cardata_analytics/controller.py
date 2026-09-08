@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import calendar
 from datetime import date, timedelta
 from typing import Any
@@ -152,10 +153,24 @@ class GlobalRangeController:
         )
 
     async def _save_and_refresh_all(self) -> None:
+        """Persist the range and wait until every vehicle has recalculated it.
+
+        Waiting here is intentional.  A quick-selection service call must not
+        return while the global date entities already show the new range but
+        the vehicle custom-period sensors still expose the previous range.
+        All vehicle refreshes run concurrently, so the slow Recorder query of
+        one vehicle does not serialize the others.
+        """
         await self._save()
         async_dispatcher_send(self.hass, SIGNAL_GLOBAL_RANGE_UPDATE)
-        for runtime in list(self._runtimes.values()):
-            self.hass.async_create_task(runtime.async_refresh_custom_period())
+
+        runtimes = list(self._runtimes.values())
+        for runtime in runtimes:
+            runtime.invalidate_custom_period()
+
+        refreshes = [runtime.async_refresh_custom_period() for runtime in runtimes]
+        if refreshes:
+            await asyncio.gather(*refreshes, return_exceptions=True)
 
     @callback
     def _async_midnight_rollover(self, now: Any) -> None:

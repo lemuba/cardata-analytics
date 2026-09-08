@@ -97,7 +97,11 @@ The shared comparison-period device provides these presets:
 
 The end date is inclusive.
 
-For historical periods, Cardata Analytics uses Home Assistant Recorder and long-term statistics where available. Analytics data from the installation day is included from the exact time tracking started. If the selected range begins before Analytics tracking was available, the available overlap is still calculated and the dashboard card marks the evaluation as incomplete.
+For historical periods, Cardata Analytics uses Home Assistant Recorder and long-term statistics where available. The first calendar day on which a vehicle was tracked is considered the beginning of that vehicle's Analytics history; Recorder queries still start at the exact tracking timestamp.
+
+If a selected range begins before a vehicle's Analytics history, the dashboard does **not** present the available overlap as the result for the whole requested range. The selected-period values are shown as unavailable (`—`) and the card displays a per-vehicle coverage warning. Any calculable overlap is retained only as diagnostic sensor attributes (`partial_distance_km`, `partial_energy_kwh`, `partial_average_consumption`).
+
+This prevents a partial sum from being mistaken for a complete multi-day result.
 
 ## Dashboard card
 

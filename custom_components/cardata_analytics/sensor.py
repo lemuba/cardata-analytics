@@ -286,10 +286,30 @@ class CardataAnalyticsSensor(SensorEntity):
             "data_complete": snapshot.custom_coverage_complete,
             "coverage_status": snapshot.custom_coverage_status,
             "tracking_started_at": snapshot.tracking_started_at.isoformat(),
+            "tracking_started_date": snapshot.history_complete_from.date().isoformat(),
             "history_complete_from": snapshot.history_complete_from.isoformat(),
             "effective_data_from": (
                 snapshot.custom_effective_from.isoformat()
                 if snapshot.custom_effective_from is not None
+                else None
+            ),
+            # Diagnostic overlap values are intentionally attributes only.  The
+            # normal sensor state remains unknown when the requested period is
+            # not fully covered, preventing partial data from being mistaken for
+            # the complete selected-period result.
+            "partial_energy_kwh": (
+                round(snapshot.custom_partial_kwh, 2)
+                if snapshot.custom_partial_kwh is not None
+                else None
+            ),
+            "partial_distance_km": (
+                round(snapshot.custom_partial_km, 1)
+                if snapshot.custom_partial_km is not None
+                else None
+            ),
+            "partial_average_consumption": (
+                round(snapshot.custom_partial_avg, 1)
+                if snapshot.custom_partial_avg is not None
                 else None
             ),
         }
@@ -297,7 +317,10 @@ class CardataAnalyticsSensor(SensorEntity):
     @property
     def available(self) -> bool:
         if self.description.custom_period:
-            return self.runtime.snapshot().custom_ready
+            # Keep the entity available even when the selected range is
+            # incomplete.  Its state is then ``unknown`` but coverage metadata
+            # remains accessible to the dashboard card and to automations.
+            return True
         if self.description.key == "soc":
             return self.runtime.current_soc is not None
         if self.description.key == "mileage":

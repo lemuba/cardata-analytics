@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.5
+
+- Fixed stale selected-period values after changing the shared quick-selection or date range. The range service now waits for all vehicle recalculations to finish before returning.
+- Results from an older Recorder query are discarded if the global range changed while that query was running; the card is cleared to an updating state until the new range is ready.
+- Incomplete custom ranges no longer expose a partial overlap as if it were the complete selected-period result. The three selected-period sensor states remain unknown (`—` in the card) until the requested range is fully covered.
+- Partial overlap results are retained as diagnostic attributes: `partial_distance_km`, `partial_energy_kwh` and `partial_average_consumption`.
+- Coverage is evaluated per vehicle at calendar-day granularity: the first day on which tracking started is usable, while any requested day before that vehicle's tracking date marks the range incomplete.
+- Coverage metadata remains available even when the selected-period state is unknown, so every affected vehicle can show the warning consistently.
+- Added `tracking_started_at` and partial-result attributes to the dashboard state signature so warnings and values update reliably without a full card rebuild.
+- Failed Recorder refreshes now clear the previous selected-period result instead of risking stale values from an older range.
+
 ## 0.1.4
 
 - Fixed per-vehicle coverage warnings in the dashboard card.
@@ -33,7 +44,7 @@
 ## 0.1.0
 
 - First standalone release of **Cardata Analytics**.
-- New Home Assistant domain `cardata_analytics`; can run in parallel with `bmw_cardata_analytics` 0.5.5.
+- Standalone Home Assistant domain `cardata_analytics`.
 - BMW i3 120 Ah and BMW iX1 presets.
 - Manufacturer-neutral `BEV` vehicle type.
 - Optional source SoH for iX1 and BEV; BMW i3 120 Ah retains the dedicated interpolated SoH curve.
