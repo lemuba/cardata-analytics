@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- Fixed per-vehicle coverage warnings in the dashboard card.
+- The card now independently verifies that the selected start date does not predate each vehicle's Analytics tracking start.
+- Prevents an affected vehicle from hiding the incomplete-history warning because of stale or delayed custom-period metadata.
+
 ## 0.1.3
 
 - Fix custom historical ranges dropping valid driving data from the integration installation day.

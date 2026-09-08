@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.3";
+const CARD_VERSION = "0.1.4";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -362,7 +362,18 @@ class CardataAnalyticsCard extends HTMLElement {
     const completeFrom = this._formatCoverageDate(attrs.history_complete_from);
     const effectiveFrom = this._formatCoverageDate(attrs.effective_data_from || attrs.tracking_started_at);
 
-    if (complete) return { show: false, text: "", status };
+    // Defensive consistency check: a selected range can never be fully covered
+    // when it starts before this vehicle's Analytics tracking timestamp.  This
+    // is evaluated in the card as well as in the backend so a stale or delayed
+    // custom-period state cannot accidentally hide the warning for one vehicle.
+    const requestedFrom = attrs.requested_from ? new Date(`${attrs.requested_from}T00:00:00`) : null;
+    const trackingStarted = attrs.tracking_started_at ? new Date(attrs.tracking_started_at) : null;
+    const startsBeforeTracking = requestedFrom && trackingStarted
+      && !Number.isNaN(requestedFrom.getTime())
+      && !Number.isNaN(trackingStarted.getTime())
+      && requestedFrom.getTime() < trackingStarted.getTime();
+
+    if (complete && !startsBeforeTracking) return { show: false, text: "", status };
 
     let text;
     if (status === "future") {
@@ -378,8 +389,9 @@ class CardataAnalyticsCard extends HTMLElement {
         ? `Keine vollständigen Analytics-Daten im gewählten Zeitraum · vollständig auswertbar ab ${completeFrom}.`
         : "Keine Analytics-Daten im gewählten Zeitraum verfügbar.";
     } else {
-      text = effectiveFrom
-        ? `Auswertung unvollständig · verfügbare Analytics-Daten berücksichtigt ab ${effectiveFrom}.`
+      const from = effectiveFrom || this._formatCoverageDate(attrs.tracking_started_at);
+      text = from
+        ? `Auswertung unvollständig · verfügbare Analytics-Daten berücksichtigt ab ${from}.`
         : "Auswertung unvollständig.";
     }
     return { show: true, text, status };
