@@ -1,5 +1,12 @@
 # Changelog
 
+
+## 0.1.13
+
+- Fixed selected-period values remaining stale while the quick-selection/date control kept keyboard focus.
+- The frontend interaction guard now blocks state patches only while a native picker is actually being used, not merely while the control remains focused.
+- A committed quick-selection/date change now immediately releases the guard and continues to accept the subsequent vehicle sensor updates.
+
 ## 0.1.12
 
 - Reworked selected-period calculation to be synchronous and derived from the current `From`/`To` dates on every sensor snapshot.
