@@ -97,11 +97,11 @@ The shared comparison-period device provides these presets:
 
 The end date is inclusive.
 
-For historical periods, Cardata Analytics uses Home Assistant Recorder and long-term statistics where available. The first calendar day on which a vehicle was tracked is considered the beginning of that vehicle's Analytics history; Recorder queries still start at the exact tracking timestamp.
+For historical periods, Cardata Analytics uses Home Assistant Recorder long-term statistics from its cumulative mileage and consumed-energy analytics sensors. Historical aggregation is performed per calendar day. A day is considered covered only when Recorder contains valid statistics for both cumulative sensors for that vehicle.
 
-If a selected range begins before a vehicle's Analytics history, the dashboard does **not** present the available overlap as the result for the whole requested range. The selected-period values are shown as unavailable (`—`) and the card displays a per-vehicle coverage warning. Any calculable overlap is retained only as diagnostic sensor attributes (`partial_distance_km`, `partial_energy_kwh`, `partial_average_consumption`).
+If any historical day inside the selected range is missing, the dashboard does **not** present the available overlap as the result for the whole requested range. The selected-period values are shown as unavailable (`—`) and the card displays a per-vehicle coverage warning. Any calculable overlap is retained only as diagnostic sensor attributes (`partial_distance_km`, `partial_energy_kwh`, `partial_average_consumption`). Additional attributes (`coverage_available_from`, `historical_days_expected`, `historical_days_covered`) make the coverage decision transparent.
 
-This prevents a partial sum from being mistaken for a complete multi-day result.
+The current day is added from live analytics counters so a range containing today updates immediately without waiting for the next Recorder statistics run. This prevents a partial sum or only today's values from being mistaken for a complete multi-day result.
 
 ## Dashboard card
 

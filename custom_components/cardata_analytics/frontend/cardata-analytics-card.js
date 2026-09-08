@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.5";
+const CARD_VERSION = "0.1.6";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -276,6 +276,9 @@ class CardataAnalyticsCard extends HTMLElement {
           tracking_started_date: stateObj.attributes?.tracking_started_date,
           history_complete_from: stateObj.attributes?.history_complete_from,
           effective_data_from: stateObj.attributes?.effective_data_from,
+          coverage_available_from: stateObj.attributes?.coverage_available_from,
+          historical_days_expected: stateObj.attributes?.historical_days_expected,
+          historical_days_covered: stateObj.attributes?.historical_days_covered,
           requested_from: stateObj.attributes?.requested_from,
           requested_to: stateObj.attributes?.requested_to,
           partial_energy_kwh: stateObj.attributes?.partial_energy_kwh,
@@ -383,39 +386,38 @@ class CardataAnalyticsCard extends HTMLElement {
     const stateObj = entityId ? this._hass?.states?.[entityId] : null;
     const attrs = stateObj?.attributes || {};
     const status = attrs.coverage_status || "";
-    const requestedFrom = String(attrs.requested_from || "").slice(0, 10);
-    const trackingDate = attrs.tracking_started_date
-      || this._localDateKey(attrs.tracking_started_at);
-    const startsBeforeTrackingDay = !!requestedFrom && !!trackingDate
-      && requestedFrom < trackingDate;
-    const complete = attrs.data_complete === true && !startsBeforeTrackingDay;
+    const complete = attrs.data_complete === true;
 
     if (complete) return { show: false, text: "", status };
 
+    // Coverage is determined by the backend from the Recorder rows that really
+    // exist for this vehicle. Do not second-guess it here from config-entry or
+    // tracking timestamps; those can predate actual long-term statistics.
     const availableFrom = this._formatCoverageDate(
-      attrs.tracking_started_date || attrs.tracking_started_at
-      || attrs.history_complete_from || attrs.effective_data_from
+      attrs.coverage_available_from || attrs.effective_data_from
+      || attrs.tracking_started_at || attrs.history_complete_from
     );
+    const expectedDays = Number(attrs.historical_days_expected ?? 0);
+    const coveredDays = Number(attrs.historical_days_covered ?? 0);
 
     let text;
     if (status === "future") {
-      text = "Zeitraum liegt in der Zukunft – noch keine vollständigen Daten vorhanden.";
+      text = "Zeitraum liegt teilweise oder vollständig in der Zukunft.";
     } else if (status === "invalid_range") {
       text = "Ungültiger Zeitraum: Das Von-Datum liegt nach dem Bis-Datum.";
     } else if (status === "entities_missing") {
       text = "Zeitraum kann noch nicht ausgewertet werden – Analytics-Entitäten fehlen.";
+    } else if (status === "source_unavailable") {
+      text = "Zeitraum kann aktuell nicht vollständig ausgewertet werden – der Kilometerstand ist nicht verfügbar.";
     } else if (status === "no_statistics" || status === "recorder_error") {
       text = availableFrom
-        ? `Zeitraum nicht vollständig auswertbar · Recorder-/Analytics-Daten verfügbar ab ${availableFrom}.`
+        ? `Zeitraum nicht vollständig auswertbar · Analytics-Daten verfügbar ab ${availableFrom}.`
         : "Zeitraum nicht vollständig auswertbar · historische Recorder-Daten fehlen.";
-    } else if (status === "no_data") {
+    } else if (status === "partial") {
+      const days = expectedDays > 0 ? ` (${coveredDays}/${expectedDays} historische Tage vorhanden)` : "";
       text = availableFrom
-        ? `Zeitraum nicht vollständig auswertbar · Analytics-Daten verfügbar ab ${availableFrom}.`
-        : "Zeitraum nicht vollständig auswertbar · keine Analytics-Daten vorhanden.";
-    } else if (startsBeforeTrackingDay || status === "partial") {
-      text = availableFrom
-        ? `Zeitraum nicht vollständig auswertbar · Analytics-Daten verfügbar ab ${availableFrom}.`
-        : "Zeitraum nicht vollständig auswertbar.";
+        ? `Zeitraum nicht vollständig auswertbar · Analytics-Daten verfügbar ab ${availableFrom}${days}.`
+        : `Zeitraum nicht vollständig auswertbar${days}.`;
     } else if (status === "initializing" || !status) {
       text = "Auswertung wird aktualisiert …";
     } else {

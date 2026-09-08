@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.6
+
+- Reworked custom-period aggregation to use Home Assistant Recorder daily long-term-statistics rows for both cumulative energy and mileage sensors.
+- Coverage is now derived from the historical data that actually exists per vehicle, instead of relying on stored config-entry/tracking timestamps.
+- A historical calendar day is considered covered only when both energy and mileage statistics exist for that day.
+- Fixed incomplete long ranges sometimes showing only today's values (or another recent overlap) as the selected-period result.
+- Fixed vehicles with inconsistent legacy tracking timestamps being treated as fully covered for dates before their actual Recorder history.
+- Today's selected-period values still come from live counters so the result updates immediately; an unavailable live mileage source now marks a range containing today as incomplete instead of silently using 0 km.
+- Added diagnostic coverage attributes: `coverage_available_from`, `historical_days_expected`, and `historical_days_covered`.
+- Simplified the dashboard coverage warning so the frontend trusts backend Recorder coverage instead of re-deriving it from tracking timestamps.
+
 ## 0.1.5
 
 - Fixed stale selected-period values after changing the shared quick-selection or date range. The range service now waits for all vehicle recalculations to finish before returning.

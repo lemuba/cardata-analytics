@@ -293,6 +293,13 @@ class CardataAnalyticsSensor(SensorEntity):
                 if snapshot.custom_effective_from is not None
                 else None
             ),
+            "coverage_available_from": (
+                snapshot.custom_available_from.isoformat()
+                if snapshot.custom_available_from is not None
+                else None
+            ),
+            "historical_days_expected": snapshot.custom_expected_historical_days,
+            "historical_days_covered": snapshot.custom_covered_historical_days,
             # Diagnostic overlap values are intentionally attributes only.  The
             # normal sensor state remains unknown when the requested period is
             # not fully covered, preventing partial data from being mistaken for
