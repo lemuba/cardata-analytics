@@ -101,6 +101,12 @@ For historical periods, Cardata Analytics uses Home Assistant Recorder statistic
 
 If the selected range includes today, completed days are read from Recorder and today's values are added from the live analytics counters. This keeps the selected-period result current without waiting for the next Recorder statistics run. For example, a range covering yesterday and today is calculated as **yesterday's recorded delta + today's live delta**.
 
+### Temporary source outages
+
+If the configured odometer source temporarily becomes `unavailable` (for example during a manufacturer server outage), Cardata Analytics keeps the **last valid odometer value** and continues using it until the source returns. This prevents current distance and selected-period analytics from disappearing simply because the upstream service is temporarily offline.
+
+The fallback does not estimate or invent missing driving distance. The odometer is frozen at the last valid reading during the outage and catches up automatically when a new valid source value arrives. The mileage sensor exposes diagnostic attributes showing whether the live source is available and whether a last-known value is currently being used.
+
 Coverage is evaluated separately for each vehicle. The first calendar day on which Cardata Analytics tracked that vehicle is considered usable. If a requested range starts before that date, the dashboard does **not** present the available overlap as the result for the whole requested range. The selected-period values are shown as unavailable (`—`) and the card displays a per-vehicle coverage warning. Any calculable overlap is retained only as diagnostic sensor attributes (`partial_distance_km`, `partial_energy_kwh`, `partial_average_consumption`).
 
 ## Dashboard card

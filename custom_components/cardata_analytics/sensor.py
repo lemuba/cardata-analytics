@@ -276,50 +276,74 @@ class CardataAnalyticsSensor(SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        """Expose selected-period coverage metadata for transparency."""
-        if not self.description.custom_period:
-            return None
-        snapshot = self.runtime.snapshot()
-        return {
-            "requested_from": snapshot.range_from.isoformat(),
-            "requested_to": snapshot.range_to.isoformat(),
-            "data_complete": snapshot.custom_coverage_complete,
-            "coverage_status": snapshot.custom_coverage_status,
-            "tracking_started_at": snapshot.tracking_started_at.isoformat(),
-            "tracking_started_date": snapshot.history_complete_from.date().isoformat(),
-            "history_complete_from": snapshot.history_complete_from.isoformat(),
-            "effective_data_from": (
-                snapshot.custom_effective_from.isoformat()
-                if snapshot.custom_effective_from is not None
-                else None
-            ),
-            "coverage_available_from": (
-                snapshot.custom_available_from.isoformat()
-                if snapshot.custom_available_from is not None
-                else None
-            ),
-            "historical_days_expected": snapshot.custom_expected_historical_days,
-            "historical_days_covered": snapshot.custom_covered_historical_days,
-            # Diagnostic overlap values are intentionally attributes only.  The
-            # normal sensor state remains unknown when the requested period is
-            # not fully covered, preventing partial data from being mistaken for
-            # the complete selected-period result.
-            "partial_energy_kwh": (
-                round(snapshot.custom_partial_kwh, 2)
-                if snapshot.custom_partial_kwh is not None
-                else None
-            ),
-            "partial_distance_km": (
-                round(snapshot.custom_partial_km, 1)
-                if snapshot.custom_partial_km is not None
-                else None
-            ),
-            "partial_average_consumption": (
-                round(snapshot.custom_partial_avg, 1)
-                if snapshot.custom_partial_avg is not None
-                else None
-            ),
-        }
+        """Expose source-health and selected-period metadata for transparency."""
+        attrs: dict[str, object] = {}
+
+        if self.description.key == "mileage":
+            attrs.update(
+                {
+                    "source_available": self.runtime.mileage_source_available,
+                    "using_last_known_value": self.runtime.using_last_known_mileage,
+                    "last_valid_source_update": (
+                        self.runtime.last_valid_mileage_at.isoformat()
+                        if self.runtime.last_valid_mileage_at is not None
+                        else None
+                    ),
+                }
+            )
+
+        if self.description.custom_period:
+            snapshot = self.runtime.snapshot()
+            attrs.update(
+                {
+                    "requested_from": snapshot.range_from.isoformat(),
+                    "requested_to": snapshot.range_to.isoformat(),
+                    "data_complete": snapshot.custom_coverage_complete,
+                    "coverage_status": snapshot.custom_coverage_status,
+                    "tracking_started_at": snapshot.tracking_started_at.isoformat(),
+                    "tracking_started_date": snapshot.history_complete_from.date().isoformat(),
+                    "history_complete_from": snapshot.history_complete_from.isoformat(),
+                    "effective_data_from": (
+                        snapshot.custom_effective_from.isoformat()
+                        if snapshot.custom_effective_from is not None
+                        else None
+                    ),
+                    "coverage_available_from": (
+                        snapshot.custom_available_from.isoformat()
+                        if snapshot.custom_available_from is not None
+                        else None
+                    ),
+                    "historical_days_expected": snapshot.custom_expected_historical_days,
+                    "historical_days_covered": snapshot.custom_covered_historical_days,
+                    "mileage_source_available": self.runtime.mileage_source_available,
+                    "using_last_known_mileage": self.runtime.using_last_known_mileage,
+                    "mileage_last_valid_at": (
+                        self.runtime.last_valid_mileage_at.isoformat()
+                        if self.runtime.last_valid_mileage_at is not None
+                        else None
+                    ),
+                    # Diagnostic overlap values are intentionally attributes only.
+                    # The normal sensor state remains unknown when the requested
+                    # period is not fully covered.
+                    "partial_energy_kwh": (
+                        round(snapshot.custom_partial_kwh, 2)
+                        if snapshot.custom_partial_kwh is not None
+                        else None
+                    ),
+                    "partial_distance_km": (
+                        round(snapshot.custom_partial_km, 1)
+                        if snapshot.custom_partial_km is not None
+                        else None
+                    ),
+                    "partial_average_consumption": (
+                        round(snapshot.custom_partial_avg, 1)
+                        if snapshot.custom_partial_avg is not None
+                        else None
+                    ),
+                }
+            )
+
+        return attrs or None
 
     @property
     def available(self) -> bool:

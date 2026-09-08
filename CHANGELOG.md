@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.8
+
+- Keep odometer-based analytics usable during temporary manufacturer/cloud outages that expose the configured mileage source as `unavailable`.
+- When upgrading while the source is already offline, restore the latest known analytics odometer from existing Recorder statistics when available, so the fallback works immediately after the update.
+- Persist the most recently valid normalized odometer value per vehicle and use it as a read-only fallback until the live source returns.
+- Today/week/month/year distance sensors no longer collapse to 0 solely because the live odometer source is temporarily unavailable.
+- Selected periods that include today continue to calculate with the last known odometer value instead of failing with `source_unavailable`, provided at least one valid odometer sample was seen before the outage.
+- The fallback never invents distance: mileage remains frozen at the last valid reading and automatically catches up when the source becomes available again.
+- Added diagnostic attributes to the mileage and selected-period sensors: `source_available`, `using_last_known_value` / `using_last_known_mileage`, and the timestamp of the last valid source update.
+- If no valid mileage value has ever been available, selected periods containing today still remain unavailable rather than silently assuming 0 km.
+
 ## 0.1.7
 
 - Fixed selected-period calculations not updating correctly when switching between Today, Yesterday and multi-day ranges.

@@ -9,7 +9,10 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.statistics import statistic_during_period
+from homeassistant.components.recorder.statistics import (
+    statistic_during_period,
+    statistics_during_period,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -154,6 +157,8 @@ class VehicleRuntime:
         self._custom_coverage_status = "initializing"
         self._range_refresh_lock = False
         self._range_refresh_pending = False
+        self._last_valid_mileage: float | None = None
+        self._last_valid_mileage_at: datetime | None = None
 
     async def async_setup(self) -> None:
         """Load persistent data and start listeners."""
@@ -184,11 +189,58 @@ class VehicleRuntime:
         # invented while valid installation-day driving is retained.
         self._history_complete_from = tracking_local
 
+        stored_last_mileage = stored.get("last_valid_mileage")
+        try:
+            self._last_valid_mileage = (
+                float(stored_last_mileage) if stored_last_mileage is not None else None
+            )
+        except (TypeError, ValueError):
+            self._last_valid_mileage = None
+
+        stored_last_mileage_at = stored.get("last_valid_mileage_at")
+        parsed_last_mileage_at = (
+            dt_util.parse_datetime(stored_last_mileage_at)
+            if isinstance(stored_last_mileage_at, str)
+            else None
+        )
+        if parsed_last_mileage_at is not None:
+            self._last_valid_mileage_at = dt_util.as_utc(parsed_last_mileage_at)
+
+        # Prefer the live source when it is currently available, but keep the
+        # most recently valid odometer value persistently. Manufacturer/cloud
+        # integrations can temporarily expose ``unavailable`` during server
+        # outages; freezing the odometer at the last known value keeps analytics
+        # readable without inventing distance.
+        source_mileage = self.source_mileage
+        if source_mileage is not None:
+            self._last_valid_mileage = source_mileage
+            source_state = self.hass.states.get(self.entry.data[CONF_MILEAGE_ENTITY])
+            source_updated = getattr(source_state, "last_updated", None)
+            self._last_valid_mileage_at = (
+                dt_util.as_utc(source_updated)
+                if isinstance(source_updated, datetime)
+                else dt_util.utcnow()
+            )
+
         self.data = {
             "total_kwh": float(stored.get("total_kwh", 0.0)),
             "periods": stored.get("periods", {}),
             "tracking_started_at": self._tracking_started_at.isoformat(),
+            "last_valid_mileage": self._last_valid_mileage,
+            "last_valid_mileage_at": (
+                self._last_valid_mileage_at.isoformat()
+                if self._last_valid_mileage_at is not None
+                else None
+            ),
         }
+
+        # Upgrading while the manufacturer source is already unavailable should
+        # still work immediately.  Older Cardata Analytics versions did not
+        # persist the last valid odometer separately, so bootstrap it once from
+        # this integration's existing Recorder statistics when possible.
+        if self._last_valid_mileage is None and source_mileage is None:
+            await self._async_restore_last_mileage_from_statistics()
+
         mileage = self.current_mileage
         for period in PERIODS:
             current = self.data["periods"].get(period, {})
@@ -225,8 +277,122 @@ class VehicleRuntime:
         return _float_state(self.hass, self.entry.data[CONF_SOC_ENTITY])
 
     @property
-    def current_mileage(self) -> float | None:
+    def source_mileage(self) -> float | None:
+        """Return the live odometer source without applying a fallback."""
         return _distance_km_state(self.hass, self.entry.data[CONF_MILEAGE_ENTITY])
+
+    @property
+    def current_mileage(self) -> float | None:
+        """Return live mileage or the most recently valid persisted value."""
+        source = self.source_mileage
+        return source if source is not None else self._last_valid_mileage
+
+    @property
+    def mileage_source_available(self) -> bool:
+        """Return whether the configured source currently has a numeric value."""
+        return self.source_mileage is not None
+
+    @property
+    def using_last_known_mileage(self) -> bool:
+        """Return whether analytics currently use the persisted odometer fallback."""
+        return self.source_mileage is None and self._last_valid_mileage is not None
+
+    @property
+    def last_valid_mileage_at(self) -> datetime | None:
+        """Timestamp of the last valid live odometer sample."""
+        return self._last_valid_mileage_at
+
+    def _remember_source_mileage(self) -> bool:
+        """Persist a newly available live odometer value.
+
+        Returns True when the persisted fallback metadata changed. Invalid or
+        unavailable source states deliberately leave the last valid value intact.
+        """
+        source = self.source_mileage
+        if source is None:
+            return False
+
+        state = self.hass.states.get(self.entry.data[CONF_MILEAGE_ENTITY])
+        updated = getattr(state, "last_updated", None)
+        updated_utc = (
+            dt_util.as_utc(updated)
+            if isinstance(updated, datetime)
+            else dt_util.utcnow()
+        )
+        changed = (
+            self._last_valid_mileage != source
+            or self._last_valid_mileage_at != updated_utc
+        )
+        self._last_valid_mileage = source
+        self._last_valid_mileage_at = updated_utc
+        self.data["last_valid_mileage"] = source
+        self.data["last_valid_mileage_at"] = updated_utc.isoformat()
+        return changed
+
+    async def _async_restore_last_mileage_from_statistics(self) -> bool:
+        """Restore the latest known analytics odometer from Recorder.
+
+        This primarily supports upgrades performed while an upstream vehicle
+        integration is already offline. Existing long-term statistics from the
+        Cardata Analytics mileage sensor survive the outage and provide a safe
+        last-known value without depending on the manufacturer source.
+        """
+        mileage_id = self._analytics_entity_id("mileage")
+        if not mileage_id:
+            return False
+
+        recorder = get_instance(self.hass)
+        end_utc = dt_util.utcnow()
+        start_utc = end_utc - timedelta(days=30)
+        try:
+            result = await recorder.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start_utc,
+                end_utc,
+                {mileage_id},
+                "hour",
+                None,
+                {"state"},
+            )
+        except Exception:
+            _LOGGER.debug(
+                "Could not restore last mileage for %s from Recorder statistics",
+                self.entry.title,
+                exc_info=True,
+            )
+            return False
+
+        rows = result.get(mileage_id) or []
+        for row in reversed(rows):
+            value = row.get("state")
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(numeric) or numeric < 0:
+                continue
+
+            timestamp = row.get("end", row.get("start"))
+            restored_at: datetime | None = None
+            try:
+                if timestamp is not None:
+                    restored_at = datetime.fromtimestamp(float(timestamp), tz=timezone.utc)
+            except (TypeError, ValueError, OSError):
+                restored_at = None
+
+            self._last_valid_mileage = numeric
+            self._last_valid_mileage_at = restored_at or dt_util.utcnow()
+            self.data["last_valid_mileage"] = numeric
+            self.data["last_valid_mileage_at"] = self._last_valid_mileage_at.isoformat()
+            _LOGGER.info(
+                "Restored last known mileage for %s from Recorder: %.3f km",
+                self.entry.title,
+                numeric,
+            )
+            return True
+
+        return False
 
     @property
     def current_range(self) -> float | None:
@@ -601,10 +767,15 @@ class VehicleRuntime:
                 snapshot = self.snapshot()
                 live_energy = max(0.0, float(snapshot.period_kwh["day"]))
                 if self.current_mileage is None:
-                    # A missing mileage source must not silently become 0 km.
+                    # No live value and no previously valid odometer value means
+                    # there is no defensible distance for today.
                     live_distance = None
                     live_complete = False
                 else:
+                    # During a temporary source outage current_mileage falls back
+                    # to the last persisted valid odometer. Distance therefore
+                    # freezes at the last known point instead of becoming unknown
+                    # or zero. It catches up automatically when the source returns.
                     live_distance = max(0.0, float(snapshot.period_km["day"]))
 
             total_energy: float | None
@@ -686,8 +857,15 @@ class VehicleRuntime:
     async def _async_process_state_changed(self, event: Event[EventStateChangedData]) -> None:
         entity_id = event.data["entity_id"]
         now = dt_util.now()
+
+        # Capture a valid odometer sample before rollover/period calculations.
+        # An ``unavailable`` transition intentionally keeps the previous value.
+        remembered_mileage = False
+        if entity_id == self.entry.data[CONF_MILEAGE_ENTITY]:
+            remembered_mileage = self._remember_source_mileage()
+
         mileage = self.current_mileage
-        changed = self._rollover(now, mileage)
+        changed = self._rollover(now, mileage) or remembered_mileage
 
         if entity_id == self.entry.data[CONF_SOC_ENTITY]:
             old_state = event.data.get("old_state")
