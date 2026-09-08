@@ -6,9 +6,15 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.lovelace.const import (
+    CONF_RESOURCE_TYPE_WS,
+    LOVELACE_DATA,
+    MODE_STORAGE,
+)
+from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.config_entries import ConfigEntry, SOURCE_IMPORT
+from homeassistant.const import CONF_ID, CONF_TYPE, CONF_URL
 from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -26,8 +32,78 @@ from .runtime import VehicleRuntime
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_MODULE = f"{FRONTEND_URL}/cardata-analytics-card.js?v=0.1.1"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.2"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
+
+
+async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
+    """Ensure the dashboard card is registered as a Lovelace module resource.
+
+    Using a normal Lovelace resource avoids the frontend race that can happen
+    when a custom card is injected with ``frontend.add_extra_js_url``.
+    """
+    lovelace_data = hass.data.get(LOVELACE_DATA)
+    if lovelace_data is None:
+        _LOGGER.warning(
+            "Lovelace is not available; add %s as a module resource manually",
+            FRONTEND_MODULE,
+        )
+        return
+
+    resources = lovelace_data.resources
+    if lovelace_data.resource_mode != MODE_STORAGE or not isinstance(
+        resources, ResourceStorageCollection
+    ):
+        # YAML resource mode is intentionally not modified by integrations.
+        existing = [
+            item
+            for item in resources.async_items()
+            if str(item.get(CONF_URL, "")).split("?", 1)[0] == FRONTEND_CARD_PATH
+        ]
+        if not existing:
+            _LOGGER.warning(
+                "Lovelace resources are managed in YAML mode. Add '%s' with "
+                "type 'module' to your Lovelace resources",
+                FRONTEND_MODULE,
+            )
+        return
+
+    # Make sure the storage collection is loaded before inspecting it.
+    await resources.async_get_info()
+    matches = [
+        item
+        for item in resources.async_items()
+        if str(item.get(CONF_URL, "")).split("?", 1)[0] == FRONTEND_CARD_PATH
+    ]
+
+    if not matches:
+        await resources.async_create_item(
+            {
+                CONF_RESOURCE_TYPE_WS: "module",
+                CONF_URL: FRONTEND_MODULE,
+            }
+        )
+        _LOGGER.debug("Registered Cardata Analytics Lovelace resource %s", FRONTEND_MODULE)
+        return
+
+    primary = matches[0]
+    updates: dict[str, Any] = {}
+    if primary.get(CONF_URL) != FRONTEND_MODULE:
+        updates[CONF_URL] = FRONTEND_MODULE
+    if primary.get(CONF_TYPE) != "module":
+        updates[CONF_RESOURCE_TYPE_WS] = "module"
+    if updates:
+        await resources.async_update_item(primary[CONF_ID], updates)
+        _LOGGER.debug("Updated Cardata Analytics Lovelace resource to %s", FRONTEND_MODULE)
+
+    # Remove stale duplicates from earlier manual/automatic registrations.
+    for duplicate in matches[1:]:
+        await resources.async_delete_item(duplicate[CONF_ID])
+        _LOGGER.warning(
+            "Removed duplicate Cardata Analytics Lovelace resource %s",
+            duplicate.get(CONF_URL),
+        )
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -40,7 +116,13 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(FRONTEND_URL, str(frontend_path), False)]
     )
-    frontend.add_extra_js_url(hass, FRONTEND_MODULE)
+    try:
+        await _async_register_lovelace_resource(hass)
+    except Exception:  # pragma: no cover - keep backend usable on frontend API changes
+        _LOGGER.exception(
+            "Could not register the Cardata Analytics Lovelace resource; "
+            "the analytics backend will continue to run"
+        )
     domain_data[DATA_FRONTEND_REGISTERED] = True
     return True
 

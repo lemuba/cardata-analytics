@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Register the dashboard card as a persistent Lovelace module resource instead of injecting it with `frontend.add_extra_js_url`.
+- Fix intermittent `Custom element doesn't exist: cardata-analytics-card` / configuration errors after normal browser or Companion App page reloads.
+- Automatically update the resource URL cache-buster to the installed integration version and remove duplicate Cardata Analytics resource entries.
+- Keep the existing static frontend path; YAML resource mode is detected and receives a clear log warning instead of being modified.
+
 ## 0.1.1
 
 - Added selected-period historical data coverage checks.

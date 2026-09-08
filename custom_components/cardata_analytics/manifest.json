@@ -1,12 +1,13 @@
 {
   "domain": "cardata_analytics",
   "name": "Cardata Analytics",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "config_flow": true,
   "integration_type": "device",
   "iot_class": "calculated",
   "dependencies": [
     "frontend",
+    "lovelace",
     "recorder"
   ],
   "documentation": "https://github.com/lemuba/cardata-analytics",

@@ -1,44 +1,72 @@
 # Cardata Analytics
 
-Home Assistant custom integration for vehicle energy and distance analytics based on existing sensor entities.
+Cardata Analytics is a Home Assistant custom integration for analysing battery-electric vehicle data from existing sensor entities.
 
-**Cardata Analytics 0.1.1** is a standalone successor branch based on the proven BMW Cardata Analyse 0.5.5 logic, but it uses its own Home Assistant domain and storage namespace:
+It tracks distance, estimated energy consumption and average consumption, provides configurable historical comparison periods, and includes an automatic dashboard card for all configured vehicles.
 
-- Integration domain: `cardata_analytics`
-- Install path: `/config/custom_components/cardata_analytics/`
-- Dashboard card: `custom:cardata-analytics-card`
-- Storage: `.storage/cardata_analytics.*`
+## Features
 
-It can therefore run **in parallel** with BMW Cardata Analyse 0.5.5 (`bmw_cardata_analytics`) without sharing config entries, entities or counters.
+- Supports multiple battery-electric vehicles (BEVs)
+- Manufacturer-neutral **BEV** setup option
+- Optional convenience presets for **BMW i3 120 Ah** and **BMW iX1**
+- Tracks:
+  - State of charge
+  - Odometer / mileage
+  - Remaining range, if available
+  - Usable battery capacity
+  - Estimated consumed energy
+  - Average consumption in kWh/100 km
+  - State of health, if available
+- Period statistics for:
+  - Today
+  - Week
+  - Month
+  - Year
+  - Custom comparison period
+- Shared comparison-period controls for all configured vehicles
+- Long-term statistics support through Home Assistant Recorder
+- Automatic Lovelace dashboard card
+- Responsive multi-vehicle layout
+- Designed to work with HACS
 
-## Vehicle types
+## Requirements
 
-The setup flow offers three vehicle types:
+Cardata Analytics does not connect directly to a vehicle or manufacturer service.
 
-- **BMW i3 120 Ah** – includes the existing i3 120 Ah SoH interpolation from usable HV capacity.
-- **BMW iX1** – BMW preset with optional source SoH sensor.
-- **BEV** – manufacturer-neutral battery electric vehicle. The vehicle name is freely configurable and no BMW manufacturer is assigned to the Home Assistant device.
+The required vehicle data must already exist as sensor entities in Home Assistant, for example through another integration, MQTT, REST, CAN/OBD data, or another data source.
 
-For a generic BEV you must provide either a sensor representing the **total usable battery capacity** or a fixed usable capacity in kWh. Do not select a sensor that reports the battery's *current stored energy*, because that would make the consumption calculation incorrect.
+Each vehicle needs:
 
-## Required source data
+- **State of charge (SoC)** — expected as a percentage from 0 to 100
+- **Odometer / mileage**
+- **Usable battery capacity** — either from a sensor or, for a generic BEV, as a fixed value in kWh
 
-Every vehicle needs:
+Optional source data:
 
-- State of charge (SoC), expected as percent from 0 to 100.
-- Odometer / mileage.
-- Usable battery capacity: required capacity sensor for the BMW presets; capacity sensor or fixed kWh value for BEV.
+- Remaining range
+- State of health (SoH)
 
-Optional:
+Distance values are normalized from `km`, `mi` or `m` to kilometres.
 
-- Remaining range.
-- Source SoH for BMW iX1 and BEV. The i3 preset calculates SoH itself.
+Capacity values are normalized from `kWh`, `Wh` or `MWh` to kWh.
 
-Distance source values are normalized from `km`, `mi` or `m` to kilometres. Capacity values are normalized from `kWh`, `Wh` or `MWh` to kWh. A source without a unit is treated as km/kWh for backward compatibility.
+## Vehicle setup
+
+The setup flow currently offers three vehicle types:
+
+- **BEV** — generic manufacturer-neutral battery-electric vehicle
+- **BMW i3 120 Ah** — convenience preset with built-in SoH estimation based on usable battery capacity
+- **BMW iX1** — convenience preset with optional source SoH sensor
+
+For most vehicles, use **BEV** and select the available source sensors manually.
+
+For a generic BEV, the vehicle name can be chosen freely. You can either select a sensor that represents the vehicle's **total usable battery capacity** or enter a fixed usable capacity in kWh.
+
+> Do not use a sensor that reports the battery's current stored energy as the usable battery capacity source. The integration needs the vehicle's total usable battery capacity for its consumption calculation.
 
 ## Consumption calculation
 
-Energy consumption is accumulated only when SoC falls:
+Cardata Analytics estimates consumed energy from falling SoC values and usable battery capacity:
 
 ```text
 consumed_kWh = (old_SoC - new_SoC) / 100 × usable_battery_capacity_kWh
@@ -46,98 +74,119 @@ consumed_kWh = (old_SoC - new_SoC) / 100 × usable_battery_capacity_kWh
 
 SoC increases are treated as charging and are not counted as consumption.
 
-Average consumption is:
+Average consumption is calculated as:
 
 ```text
 kWh_per_100km = consumed_kWh / driven_km × 100
 ```
 
-The integration creates values for today, week, month, year, total energy and a user-selected comparison period. Recorder statistics are used for historical comparison ranges while the current day is added from live counters.
+The quality of the result depends on the accuracy and update frequency of the source sensors.
 
-### Historical data coverage
+## Statistics and comparison periods
 
-Cardata Analytics never pretends that a requested historical period is complete when the integration did not yet have reliable analytics data. The integration stores when tracking started and considers historical day ranges fully covered from the first complete local day after installation.
+Cardata Analytics creates analytics for today, week, month and year, as well as a freely selectable comparison period.
 
-When a custom period starts earlier than that, Cardata Analytics:
+The shared comparison-period device provides these presets:
 
-- calculates the reliable overlap that is actually available,
-- exposes `data_complete: false` and coverage metadata on the custom-period sensors, and
-- shows a warning in the dashboard card with the date from which complete historical evaluation is available.
-
-If Recorder statistics are unexpectedly missing for an otherwise covered historical period, the custom-period sensors are marked unavailable instead of silently returning a misleading complete result. Long historical ranges (for example two years) therefore work as long as Cardata Analytics long-term statistics actually cover that interval.
-
-## Comparison period
-
-A separate integration-managed device provides shared controls for all configured vehicles:
-
-- Benutzerdefiniert
-- Heute
-- Letzter Tag (yesterday through today)
-- Letzte 7 Tage
-- Letzter Monat
-- Letztes Jahr
+- Custom
+- Today
+- Last day
+- Last 7 days
+- Last month
+- Last year
 
 The end date is inclusive.
 
+For historical periods, Cardata Analytics uses Home Assistant Recorder and long-term statistics where available. If the selected range is only partially covered by recorded analytics data, the custom-period sensors expose coverage information and the dashboard card indicates that the evaluation is incomplete.
+
 ## Dashboard card
 
-The integration registers its own Home Assistant card. Add a manual card with:
+Cardata Analytics includes its own Lovelace card:
 
 ```yaml
 type: custom:cardata-analytics-card
 ```
 
-The card discovers entities through Home Assistant's entity and device registries, so it does not depend on hard-coded entity IDs. It keeps the DOM stable during state updates to avoid the iOS/iPadOS scroll-jump issue that was fixed in the 0.5.5 predecessor.
+The card automatically discovers all vehicles and analytics entities created by this integration. No hard-coded entity IDs are required.
 
-After installing or updating the integration, a full Home Assistant restart and a hard browser refresh may be required for the frontend module to refresh.
+It automatically expands when additional vehicles are added and provides:
 
-## Manual installation for parallel testing
+- Vehicle overview
+- SoC and optional SoH
+- Remaining range
+- Battery capacity
+- Odometer
+- Total estimated energy consumption
+- Today / week / month / year statistics
+- Custom comparison-period values
+- Shared date and preset controls
 
-1. Copy `custom_components/cardata_analytics` to `/config/custom_components/cardata_analytics`.
+The card is registered as a Lovelace module resource automatically when Home Assistant uses storage mode.
+
+After installing or updating the integration, restart Home Assistant. A normal browser or Companion App reload should then be sufficient.
+
+## Installation with HACS
+
+### Custom repository
+
+Until Cardata Analytics is available in the default HACS repository list, add it as a custom repository:
+
+1. Open **HACS** in Home Assistant.
+2. Open the menu and select **Custom repositories**.
+3. Add:
+
+   ```text
+   https://github.com/lemuba/cardata-analytics
+   ```
+
+4. Select category **Integration**.
+5. Install **Cardata Analytics**.
+6. Restart Home Assistant.
+7. Go to **Settings → Devices & services → Add integration**.
+8. Search for **Cardata Analytics**.
+
+## Manual installation
+
+1. Copy:
+
+   ```text
+   custom_components/cardata_analytics
+   ```
+
+   to:
+
+   ```text
+   /config/custom_components/cardata_analytics
+   ```
+
 2. Restart Home Assistant.
 3. Go to **Settings → Devices & services → Add integration**.
 4. Search for **Cardata Analytics**.
 5. Add one or more vehicles.
-6. Add `custom:cardata-analytics-card` to a dashboard if desired.
+6. Add the dashboard card if desired:
 
-Do **not** replace `/config/custom_components/bmw_cardata_analytics`; both integrations are intentionally separate.
-
-## HACS custom repository
-
-Before publishing the repository, replace the GitHub owner placeholder in `manifest.json`. The helper script does that automatically:
-
-```bash
-python tools/set_github_username.py lemuba
-```
-
-Then push the repository as:
-
-```text
-cardata-analytics
-```
-
-For HACS validation, keep GitHub Issues enabled and give the repository a useful description. Recommended topics include `home-assistant`, `hacs`, `ev`, `bev` and `energy`.
-
-To test through HACS before submitting it as a default repository, add your GitHub repository as a **Custom repository** with category **Integration**.
-
-## HACS / Home Assistant validation
-
-The repository includes `.github/workflows/validate.yml` with:
-
-- `hacs/action@main`
-- `home-assistant/actions/hassfest@master`
-
-It also includes a local `brand/icon.png`, as required for a HACS integration repository.
+   ```yaml
+   type: custom:cardata-analytics-card
+   ```
 
 ## Data and privacy
 
-Cardata Analytics does not communicate with a vehicle manufacturer or external service. It reads source entities already present in Home Assistant and calculates analytics locally. Its manifest therefore uses the Home Assistant IoT class `calculated`.
+Cardata Analytics performs its calculations locally in Home Assistant.
 
-## Notes and limitations
+It does not send vehicle data to the developer and does not communicate with a vehicle manufacturer or external cloud service on its own. It only reads the source entities that already exist in your Home Assistant instance.
 
-- The SoC-based energy calculation is an estimate; accuracy depends on the quality and update cadence of the selected source sensors.
-- A newly installed vehicle starts its live day/week/month/year counters at installation time. Historical comparison data can only use statistics that exist in Home Assistant's Recorder database.
-- The i3 SoH curve is specific to the BMW i3 120 Ah preset and is never applied to generic BEVs.
+## Limitations
+
+- Energy consumption is estimated from SoC changes and usable battery capacity; it is not a direct measurement of traction energy.
+- Accuracy depends on the precision and update frequency of the source sensors.
+- Historical analysis can only use data that is available in Home Assistant Recorder / long-term statistics.
+- SoH estimation for the BMW i3 120 Ah preset is specific to that preset and is not applied to generic BEVs.
+
+## Feedback and issues
+
+Feedback, feature requests and bug reports are welcome:
+
+https://github.com/lemuba/cardata-analytics/issues
 
 ## License
 
