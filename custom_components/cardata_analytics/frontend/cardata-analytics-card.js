@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.9";
+const CARD_VERSION = "0.1.10";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -83,9 +83,16 @@ class CardataAnalyticsCard extends HTMLElement {
   }
 
   _isControlInteractionActive() {
-    if (this._controlInteraction) return true;
-    const active = this.shadowRoot?.activeElement;
-    return !!active && (active.tagName === "SELECT" || active.tagName === "INPUT");
+    // Deliberately does NOT also treat a merely-focused select/date input as
+    // "interacting". Native date/select controls keep DOM focus after a
+    // value is committed (change fires, but blur may not, especially in the
+    // iOS/iPadOS WebView). If we kept blocking renders on focus alone, a
+    // range change could finish on the backend while the card stays stuck
+    // showing the previous range until the user taps away. The explicit
+    // _controlInteraction flag (set on pointerdown/focus, cleared on blur or
+    // once the triggering service call has resolved) is sufficient and is
+    // always cleared deterministically, so it alone is the source of truth.
+    return this._controlInteraction;
   }
 
   _beginControlInteraction() {

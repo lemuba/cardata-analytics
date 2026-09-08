@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10
+
+- Fixed the dashboard card getting stuck showing the previous "Gewählter Zeitraum" (selected period) values after changing the quick selection or the Von/Bis dates, until the user tapped away from the control.
+- The card's re-render guard was treating a select/date input as "still being interacted with" purely because it still had DOM focus, even after the value was committed and the backend had already finished recalculating. Native date/select controls commonly keep focus after a value change (especially in the iOS/iPadOS Companion App WebView), so incoming state updates kept being deferred indefinitely instead of being applied.
+- The guard now relies solely on the existing, deterministically-cleared interaction flag (set on pointerdown/focus, cleared on blur or once the triggering service call has resolved), so a completed range change is shown immediately instead of waiting for an unrelated blur event.
+
 ## 0.1.9
 
 - Fixed selected-period values sometimes remaining on the previous date range after changing the comparison dates.
