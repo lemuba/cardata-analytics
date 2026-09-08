@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Fix custom historical ranges dropping valid driving data from the integration installation day.
+- Historical queries now start at the exact per-vehicle Analytics tracking timestamp instead of the following midnight.
+- Ranges that start before tracking began still expose `data_complete: false`, but all actually recorded Analytics data is included in the result.
+- Improve the dashboard coverage warning so partial ranges show when usable Analytics data starts.
+
 ## 0.1.2
 
 - Register the dashboard card as a persistent Lovelace module resource instead of injecting it with `frontend.add_extra_js_url`.

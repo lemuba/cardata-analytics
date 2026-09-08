@@ -348,10 +348,10 @@ class VehicleRuntime:
         added from live counters so the selected range updates immediately.
 
         A selected range may start before Cardata Analytics existed. In that
-        case we deliberately clamp the historical query to the first complete
-        local day for which this integration can provide a full history and
-        expose the result as *partial* instead of silently pretending the whole
-        requested period was covered.
+        case the historical query is clamped to the exact tracking start so
+        valid driving data from the installation day is retained. The result is
+        exposed as *partial* when the requested calendar range starts earlier
+        than the available Analytics data.
         """
         if self._range_refresh_lock:
             self._range_refresh_pending = True
@@ -395,15 +395,19 @@ class VehicleRuntime:
                 )
                 return
 
-            # Only full local days after initial setup are considered complete
-            # historical coverage. This prevents an installation at e.g. 15:00
-            # from masquerading as a full day's history.
-            effective_start_local = max(requested_start_local, self._history_complete_from)
-            requested_extends_before_history = requested_start_local < self._history_complete_from
+            # Use every Analytics sample that can exist since tracking started.
+            # A vehicle may already have generated valid driving data on the
+            # installation day, so clamping to the following midnight would
+            # incorrectly discard those values.  The exact tracking timestamp
+            # is therefore the earliest usable boundary.  Coverage can still be
+            # marked partial when the requested calendar range starts earlier.
+            tracking_start_local = self._tracking_started_at.astimezone(tz)
+            effective_start_local = max(requested_start_local, tracking_start_local)
+            requested_extends_before_history = requested_start_local < tracking_start_local
             requested_extends_into_future = end_date > today
 
-            # No full historical day overlaps the request and today is not part
-            # of it. There is nothing reliable to aggregate yet.
+            # No tracked Analytics interval overlaps the request and today is
+            # not part of it. There is nothing reliable to aggregate yet.
             if end_date < today and effective_start_local >= requested_end_local:
                 self._set_custom_values(
                     0.0,
@@ -480,9 +484,9 @@ class VehicleRuntime:
                     historical_energy = historical_energy_result
                     historical_distance = historical_distance_result
 
-            # If the integration itself only started today, today's live counters
-            # are still useful, but they represent only the tracked part of today.
-            if requested_start_local < self._history_complete_from:
+            # If the requested calendar range starts before tracking began, the
+            # available values are still useful but cover only the tracked part.
+            if requested_start_local < self._tracking_started_at.astimezone(tz):
                 coverage_complete = False
                 if coverage_status == "complete":
                     coverage_status = "partial"

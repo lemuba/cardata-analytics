@@ -97,7 +97,7 @@ The shared comparison-period device provides these presets:
 
 The end date is inclusive.
 
-For historical periods, Cardata Analytics uses Home Assistant Recorder and long-term statistics where available. If the selected range is only partially covered by recorded analytics data, the custom-period sensors expose coverage information and the dashboard card indicates that the evaluation is incomplete.
+For historical periods, Cardata Analytics uses Home Assistant Recorder and long-term statistics where available. Analytics data from the installation day is included from the exact time tracking started. If the selected range begins before Analytics tracking was available, the available overlap is still calculated and the dashboard card marks the evaluation as incomplete.
 
 ## Dashboard card
 

@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.2";
+const CARD_VERSION = "0.1.3";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -360,6 +360,7 @@ class CardataAnalyticsCard extends HTMLElement {
     const complete = attrs.data_complete === true;
     const status = attrs.coverage_status || "";
     const completeFrom = this._formatCoverageDate(attrs.history_complete_from);
+    const effectiveFrom = this._formatCoverageDate(attrs.effective_data_from || attrs.tracking_started_at);
 
     if (complete) return { show: false, text: "", status };
 
@@ -377,8 +378,8 @@ class CardataAnalyticsCard extends HTMLElement {
         ? `Keine vollständigen Analytics-Daten im gewählten Zeitraum · vollständig auswertbar ab ${completeFrom}.`
         : "Keine Analytics-Daten im gewählten Zeitraum verfügbar.";
     } else {
-      text = completeFrom
-        ? `Auswertung unvollständig · vollständig auswertbar ab ${completeFrom}.`
+      text = effectiveFrom
+        ? `Auswertung unvollständig · verfügbare Analytics-Daten berücksichtigt ab ${effectiveFrom}.`
         : "Auswertung unvollständig.";
     }
     return { show: true, text, status };
