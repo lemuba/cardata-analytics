@@ -316,6 +316,8 @@ class CardataAnalyticsSensor(SensorEntity):
                     "historical_days_expected": snapshot.custom_expected_historical_days,
                     "historical_days_covered": snapshot.custom_covered_historical_days,
                     "history_backend": "daily_ledger",
+                    "daily_history_schema": self.runtime.data.get("daily_history_schema"),
+                    "daily_history_last_repair": self.runtime.data.get("daily_history_last_repair"),
                     "daily_history_days": len(self.runtime.data.get("daily_history", {})),
                     "daily_history_first": (
                         min(self.runtime.data.get("daily_history", {}))
@@ -324,6 +326,13 @@ class CardataAnalyticsSensor(SensorEntity):
                     ),
                     "daily_history_last": (
                         max(self.runtime.data.get("daily_history", {}))
+                        if self.runtime.data.get("daily_history")
+                        else None
+                    ),
+                    "daily_history_last_entry": (
+                        self.runtime.data.get("daily_history", {}).get(
+                            max(self.runtime.data.get("daily_history", {}))
+                        )
                         if self.runtime.data.get("daily_history")
                         else None
                     ),

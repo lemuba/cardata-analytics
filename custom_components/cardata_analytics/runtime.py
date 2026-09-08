@@ -34,6 +34,7 @@ from .controller import GlobalRangeController
 _LOGGER = logging.getLogger(__name__)
 
 PERIODS = ("day", "week", "month", "year")
+DAILY_HISTORY_SCHEMA = 2
 
 
 def _float_state(hass: HomeAssistant, entity_id: str | None) -> float | None:
@@ -194,6 +195,11 @@ class VehicleRuntime:
             )
         except (TypeError, ValueError):
             self._last_valid_mileage = None
+        # Keep the value that was persisted before this startup. If Home Assistant
+        # missed midnight while it was stopped, the live odometer on startup may
+        # already include driving from the new day and must never be used as the
+        # previous day's end value.
+        persisted_mileage_before_setup = self._last_valid_mileage
 
         stored_last_mileage_at = stored.get("last_valid_mileage_at")
         parsed_last_mileage_at = (
@@ -220,6 +226,29 @@ class VehicleRuntime:
                 else dt_util.utcnow()
             )
 
+        # Keep a lifetime odometer baseline for Cardata Analytics itself. This is
+        # independent of Day/Week/Month/Year rollovers and makes first-day repair
+        # correct even across a calendar-year boundary. Older releases can recover
+        # it from the stored Year bucket when the tracking start is in the same year.
+        tracking_start_mileage = stored.get("tracking_start_mileage")
+        try:
+            tracking_start_mileage = (
+                float(tracking_start_mileage)
+                if tracking_start_mileage is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            tracking_start_mileage = None
+        if tracking_start_mileage is None:
+            stored_year = (stored.get("periods") or {}).get("year", {})
+            candidate = stored_year.get("start_mileage") if isinstance(stored_year, dict) else None
+            try:
+                tracking_start_mileage = float(candidate) if candidate is not None else None
+            except (TypeError, ValueError):
+                tracking_start_mileage = None
+        if tracking_start_mileage is None:
+            tracking_start_mileage = self._last_valid_mileage
+
         raw_daily_history = stored.get("daily_history", {})
         daily_history: dict[str, dict[str, Any]] = {}
         if isinstance(raw_daily_history, dict):
@@ -243,13 +272,19 @@ class VehicleRuntime:
                     "kwh": max(0.0, kwh),
                     "km": max(0.0, km) if km is not None else None,
                     "source": str(values.get("source") or "stored"),
+                    # Old ledger entries had no explicit completeness flag and
+                    # were intended as complete. New restart-estimate entries can
+                    # deliberately mark a day incomplete.
+                    "complete": values.get("complete", True) is not False,
                 }
 
         self.data = {
             "total_kwh": float(stored.get("total_kwh", 0.0)),
             "periods": stored.get("periods", {}),
             "daily_history": daily_history,
+            "daily_history_schema": DAILY_HISTORY_SCHEMA,
             "tracking_started_at": self._tracking_started_at.isoformat(),
+            "tracking_start_mileage": tracking_start_mileage,
             "last_valid_mileage": self._last_valid_mileage,
             "last_valid_mileage_at": (
                 self._last_valid_mileage_at.isoformat()
@@ -282,16 +317,21 @@ class VehicleRuntime:
         old_day_id = day_data.get("id")
         current_day_id = _period_id("day", now)
         if isinstance(old_day_id, str) and old_day_id != current_day_id:
-            archive_end_mileage = self._last_valid_mileage
+            # HA missed the exact midnight boundary. Use only the odometer value
+            # that had already been persisted before this startup, never the live
+            # startup value (which may include driving from today). Because the
+            # exact boundary was missed, keep the archived day marked incomplete
+            # unless the dedicated first-day repair below can reconstruct it.
             self._archive_day_period(
                 old_day_id,
                 day_data,
-                archive_end_mileage,
+                persisted_mileage_before_setup,
                 source="rollover_restore",
+                complete=False,
             )
 
         self._rollover(now, mileage)
-        self._migrate_previous_day_from_existing_counters(now)
+        self._repair_previous_day_from_existing_counters(now)
         await self.store.async_save(self.data)
 
         tracked = [self.entry.data[CONF_SOC_ENTITY], self.entry.data[CONF_MILEAGE_ENTITY]]
@@ -471,6 +511,7 @@ class VehicleRuntime:
         end_mileage: float | None,
         *,
         source: str = "runtime",
+        complete: bool = True,
     ) -> bool:
         """Persist one completed local calendar day in the compact daily ledger."""
         try:
@@ -496,6 +537,7 @@ class VehicleRuntime:
             "kwh": round(kwh, 6),
             "km": round(distance, 6) if distance is not None else None,
             "source": source,
+            "complete": bool(complete and distance is not None),
         }
         previous = self.data.setdefault("daily_history", {}).get(key)
         if previous == value:
@@ -503,38 +545,69 @@ class VehicleRuntime:
         self.data["daily_history"][key] = value
         return True
 
-    def _migrate_previous_day_from_existing_counters(self, now: datetime) -> bool:
-        """Backfill yesterday once when upgrading from pre-ledger releases.
+    def _repair_previous_day_from_existing_counters(self, now: datetime) -> bool:
+        """Repair the first completed tracking day from current cumulative buckets.
 
-        Cardata Analytics 0.1.x already persisted cumulative Year/Day distance and
-        lifetime/Day energy.  When the integration itself only started yesterday,
-        their difference reconstructs that first completed day exactly without
-        relying on Recorder aggregation semantics.  This migration is deliberately
-        narrow: it never invents older daily buckets that cannot be reconstructed
-        unambiguously.
+        This is intentionally narrow and deterministic. If tracking started
+        yesterday, then the integration lifetime/year distance minus today's
+        distance is exactly yesterday's tracked distance, and lifetime energy
+        minus today's energy is exactly yesterday's tracked energy. This repairs
+        bad 0.1.10 ledger entries that accidentally stored today's values for
+        yesterday and also backfills pre-ledger installations.
         """
         tz = dt_util.get_time_zone(self.hass.config.time_zone)
         tracking_date = self._tracking_started_at.astimezone(tz).date()
         yesterday = now.date() - timedelta(days=1)
-        key = yesterday.isoformat()
-        history = self.data.setdefault("daily_history", {})
-        if key in history or tracking_date != yesterday:
+        if tracking_date != yesterday:
             return False
 
-        snapshot = self.snapshot()
-        previous_kwh = max(0.0, float(self.data.get("total_kwh", 0.0)) - snapshot.period_kwh["day"])
-        previous_km = max(0.0, snapshot.period_km["year"] - snapshot.period_km["day"])
-        history[key] = {
+        mileage = self.current_mileage
+        if mileage is None:
+            return False
+
+        periods = self.data.get("periods", {})
+        day_data = periods.get("day", {})
+        if day_data.get("id") != _period_id("day", now):
+            return False
+
+        try:
+            day_start = day_data.get("start_mileage")
+            tracking_start_mileage = self.data.get("tracking_start_mileage")
+            if day_start is None or tracking_start_mileage is None:
+                return False
+            today_km = max(0.0, float(mileage) - float(day_start))
+            tracked_total_km = max(0.0, float(mileage) - float(tracking_start_mileage))
+            previous_km = max(0.0, tracked_total_km - today_km)
+
+            today_kwh = max(0.0, float(day_data.get("kwh", 0.0)))
+            tracked_total_kwh = max(0.0, float(self.data.get("total_kwh", 0.0)))
+            previous_kwh = max(0.0, tracked_total_kwh - today_kwh)
+        except (TypeError, ValueError):
+            return False
+
+        key = yesterday.isoformat()
+        repaired = {
             "kwh": round(previous_kwh, 6),
             "km": round(previous_km, 6),
-            "source": "migration_0.1.10",
+            "source": "repair_0.1.11",
+            "complete": True,
         }
-        _LOGGER.info(
-            "Migrated first completed day for %s: %s = %.3f km / %.3f kWh",
+        history = self.data.setdefault("daily_history", {})
+        previous = history.get(key)
+        if previous == repaired:
+            return False
+
+        history[key] = repaired
+        self.data["daily_history_schema"] = DAILY_HISTORY_SCHEMA
+        self.data["daily_history_last_repair"] = dt_util.utcnow().isoformat()
+        _LOGGER.warning(
+            "Repaired first completed day for %s: %s = %.3f km / %.3f kWh "
+            "(previous ledger entry: %s)",
             self.entry.title,
             key,
             previous_km,
             previous_kwh,
+            previous,
         )
         return True
 
@@ -572,7 +645,11 @@ class VehicleRuntime:
         while day <= end_day:
             key = day.isoformat()
             item = history.get(key) if isinstance(history, dict) else None
-            if not isinstance(item, dict) or item.get("km") is None:
+            if (
+                not isinstance(item, dict)
+                or item.get("km") is None
+                or item.get("complete", True) is False
+            ):
                 missing.append(key)
             else:
                 try:

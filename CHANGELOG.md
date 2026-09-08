@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.11
+
+- Fixed the 0.1.10 first-day ledger migration that could persist today's distance/energy under yesterday's date after an upgrade or restart.
+- On upgrade, the first completed tracking day is now deterministically repaired from the integration lifetime odometer baseline minus today's distance, and lifetime consumed energy minus today's energy.
+- Existing incorrect first-day ledger entries are overwritten when the vehicle started tracking yesterday (for example i3 59 km -> 12 km and Twingo 0 km -> 15 km for 2026-09-07 in the reported test case).
+- Added a persistent integration-level `tracking_start_mileage` baseline so the repair remains valid across normal period resets.
+- A Home Assistant restart that misses the exact midnight boundary no longer assigns the live startup odometer to the previous day. Such a day is marked incomplete unless it can be reconstructed safely.
+- Added `complete` metadata to daily-ledger entries and exclude explicitly incomplete days from full selected-range results.
+- Added `daily_history_schema`, `daily_history_last_repair` and `daily_history_last_entry` diagnostics to selected-period sensor attributes.
+
 ## 0.1.10
 
 - Replaced custom-range history calculation with a persistent per-vehicle daily ledger.
