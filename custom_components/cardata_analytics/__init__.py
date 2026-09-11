@@ -34,8 +34,8 @@ from .poi import async_register_websocket
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.28.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.28"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.29.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.29"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 

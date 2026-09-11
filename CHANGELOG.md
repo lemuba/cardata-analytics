@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.29
+
+- Reworked EV charging POIs into a multi-provider path: general POIs still use OSM/Overpass, while charging searches use QLever OSM Planet as the primary OSM query path and, when the search circle overlaps Germany, additionally query the public Bundesnetzagentur charging-station map dataset; Overpass is only an EV fallback if QLever is unavailable.
+- Added OSM charge-point aggregation: separately mapped `man_made=charge_point` objects within 180 m are merged into their `amenity=charging_station` location before connector/power filters are applied. Standalone charge points are promoted to charging locations.
+- Fixed targeted IONITY/CCS searches that could miss real stations when brand/operator or socket/output tags existed only on individual charge-point objects instead of the parent station.
+- Charging-only searches no longer wait on public Overpass proxies in normal operation. QLever/Bundesnetzagentur are queried independently; Overpass is reserved as a bounded EV fallback if QLever is unavailable. Mixed non-charging category searches still use Overpass for those general POIs.
+- Added conservative cross-provider deduplication/metadata merging for OSM, QLever and Bundesnetzagentur charging results, with source information shown in POI popups.
+- Provider failures are tolerated when another source succeeds; the POI status indicates when fallback data was used.
+- Large merged provider result sets are sorted by distance before truncation, avoiding arbitrary loss of nearby stations in 100–200 km searches.
+- Kept the existing latest-request-wins loader, watchdog/retry logic, 2–200 km radii, presets/filters, map providers and all Analytics/Daily Ledger/range logic unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.29.js?v=0.1.29`.
+
 ## 0.1.28
 
 - Reworked POI loading into an explicit latest-request-wins state machine. A running Home Assistant websocket request is no longer invalidated by repeated HA state updates, GPS refreshes or UI re-renders; only one newest follow-up query is kept when filters/radius/vehicle change mid-request.
