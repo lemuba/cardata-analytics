@@ -231,6 +231,8 @@ class CardataAnalyticsCard extends HTMLElement {
       ["soc", "soc"],
       ["soh", "soh"],
       ["range", "range"],
+      ["latitude", "latitude"],
+      ["longitude", "longitude"],
       ["current_address", "current_address"],
     ];
     for (const [suffix, key] of suffixMap) {
@@ -268,16 +270,56 @@ class CardataAnalyticsCard extends HTMLElement {
   _addressText(entityId) {
     const obj = entityId ? this._hass?.states?.[entityId] : null;
     const value = obj?.state;
-    return !value || ["unknown", "unavailable", "none"].includes(String(value).toLowerCase())
-      ? "Standortadresse nicht verfügbar"
+    return !value || ["unknown", "unavailable", "none", ""].includes(String(value).toLowerCase())
+      ? null
       : String(value);
+  }
+
+  _locationAvailable(entities) {
+    if (!entities?.current_address || !this._addressText(entities.current_address)) return false;
+    const rawLat = this._state(entities.latitude, null);
+    const rawLon = this._state(entities.longitude, null);
+    if (rawLat == null || rawLon == null || String(rawLat).trim() === "" || String(rawLon).trim() === "") return false;
+    const lat = Number(rawLat);
+    const lon = Number(rawLon);
+    return Number.isFinite(lat) && Number.isFinite(lon)
+      && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+  }
+
+  _locationUpdatedAt(entities) {
+    const timestamps = [entities?.latitude, entities?.longitude]
+      .map((id) => this._hass?.states?.[id])
+      .map((obj) => obj?.last_updated || obj?.last_changed)
+      .filter(Boolean)
+      .sort();
+    if (timestamps.length) return timestamps.at(-1);
+    return this._hass?.states?.[entities?.current_address]?.attributes?.last_geocoded || null;
+  }
+
+  _locationAgeText(entities) {
+    const iso = this._locationUpdatedAt(entities);
+    if (!iso) return "Standortzeit unbekannt";
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return "Standortzeit unbekannt";
+    const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (sec < 60) return "Standort gerade aktualisiert";
+    const min = Math.round(sec / 60);
+    if (min < 60) return `Standort vor ${min} Min. aktualisiert`;
+    const hrs = Math.round(min / 60);
+    if (hrs < 24) return `Standort vor ${hrs} Std. aktualisiert`;
+    const days = Math.round(hrs / 24);
+    return `Standort vor ${days} Tag${days === 1 ? "" : "en"} aktualisiert`;
   }
 
   _googleMapsUrl(entityId) {
     if (!entityId || !this._hass) return null;
     const stateObj = this._hass.states[entityId];
     const url = stateObj?.attributes?.google_maps_url;
-    return typeof url === "string" && url.startsWith("https://") ? url : null;
+    if (typeof url === "string" && url.startsWith("https://")) return url;
+    const lat = Number(stateObj?.attributes?.latitude);
+    const lon = Number(stateObj?.attributes?.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lon}`)}`;
   }
 
   _stateSignature() {
@@ -301,6 +343,10 @@ class CardataAnalyticsCard extends HTMLElement {
           last_geocoded: stateObj.attributes?.last_geocoded || "",
           using_cached_address: stateObj.attributes?.using_cached_address === true,
         })}`;
+      }
+      if ((registryEntry?.unique_id || "").endsWith("_latitude")
+          || (registryEntry?.unique_id || "").endsWith("_longitude")) {
+        extra += `|updated=${stateObj.last_updated || stateObj.last_changed || ""}`;
       }
       if (Object.prototype.hasOwnProperty.call(stateObj.attributes || {}, "data_complete")) {
         extra += `|coverage=${JSON.stringify({
@@ -493,9 +539,12 @@ class CardataAnalyticsCard extends HTMLElement {
           </div>
         </div>
       </div>
-      ${e.current_address ? `<div class="location-row">
+      ${e.current_address ? `<div class="location-row${this._locationAvailable(e) ? "" : " hidden"}" data-bind-row="${id}:location">
         <ha-icon icon="mdi:map-marker"></ha-icon>
-        <span class="location-text" data-bind="${id}:address">${this._esc(this._addressText(e.current_address))}</span>
+        <span class="location-copy">
+          <span class="location-text" data-bind="${id}:address">${this._esc(this._addressText(e.current_address) || "")}</span>
+          <small class="location-age" data-bind="${id}:location-age">${this._esc(this._locationAgeText(e))}</small>
+        </span>
         <a class="maps-btn${this._googleMapsUrl(e.current_address) ? "" : " hidden"}" data-bind-link="${id}:maps" href="${this._esc(this._googleMapsUrl(e.current_address) || "#")}" target="_blank" rel="noopener" title="In Google Maps öffnen"><ha-icon icon="mdi:google-maps"></ha-icon><span>Maps</span></a>
       </div>` : ""}
       <div class="metrics">
@@ -553,10 +602,14 @@ class CardataAnalyticsCard extends HTMLElement {
     this._setText(`${id}:energy-total`, this._num(e.energy_consumed_total, 2));
 
     if (e.current_address) {
-      this._setText(`${id}:address`, this._addressText(e.current_address));
+      const locationVisible = this._locationAvailable(e);
+      const row = this.shadowRoot?.querySelector(`[data-bind-row="${CSS.escape(`${id}:location`)}"]`);
+      row?.classList.toggle("hidden", !locationVisible);
+      this._setText(`${id}:address`, this._addressText(e.current_address) || "");
+      this._setText(`${id}:location-age`, this._locationAgeText(e));
       const link = this.shadowRoot?.querySelector(`[data-bind-link="${CSS.escape(`${id}:maps`)}"]`);
       if (link) {
-        const url = this._googleMapsUrl(e.current_address);
+        const url = locationVisible ? this._googleMapsUrl(e.current_address) : null;
         link.classList.toggle("hidden", !url);
         if (url && link.getAttribute("href") !== url) link.setAttribute("href", url);
       }
@@ -766,8 +819,11 @@ class CardataAnalyticsCard extends HTMLElement {
       .car-dot ha-icon { --mdc-icon-size:23px; }
       .sub { margin-top:4px; font-size:14px; line-height:1.4; }
       .location-row { display:flex; align-items:center; gap:7px; margin:-3px 0 10px 54px; min-width:0; color:var(--secondary-text-color); font-size:12px; }
+      .location-row.hidden { display:none; }
       .location-row > ha-icon { --mdc-icon-size:17px; color:var(--primary-color); flex:0 0 auto; }
-      .location-text { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+      .location-copy { display:flex; flex-direction:column; min-width:0; flex:1; }
+      .location-text { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:var(--primary-text-color); }
+      .location-age { margin-top:2px; color:var(--secondary-text-color); font-size:10px; }
       .maps-btn { margin-left:auto; flex:0 0 auto; display:inline-flex; align-items:center; gap:4px; min-height:30px; padding:0 9px; border:1px solid var(--divider-color); border-radius:9px; color:var(--primary-text-color); background:var(--secondary-background-color); text-decoration:none; font-weight:700; }
       .maps-btn ha-icon { --mdc-icon-size:16px; color:var(--primary-color); }
       .maps-btn.hidden { display:none; }
@@ -1106,8 +1162,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
         ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lon}`)}`
         : null);
     const lastChanged = [
-      this._hass?.states?.[e.latitude]?.last_changed,
-      this._hass?.states?.[e.longitude]?.last_changed,
+      this._hass?.states?.[e.latitude]?.last_updated || this._hass?.states?.[e.latitude]?.last_changed,
+      this._hass?.states?.[e.longitude]?.last_updated || this._hass?.states?.[e.longitude]?.last_changed,
     ].filter(Boolean).sort().at(-1) || null;
     return {
       ...v,
@@ -1202,6 +1258,11 @@ class CardataAnalyticsMapCard extends HTMLElement {
         icon: "mdi:pharmacy",
         clauses: ['["amenity"="pharmacy"]'],
       },
+      hospital: {
+        label: "Krankenhäuser",
+        icon: "mdi:hospital-building",
+        clauses: ['["amenity"="hospital"]'],
+      },
       toilets: {
         label: "Toiletten",
         icon: "mdi:human-male-female",
@@ -1219,6 +1280,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     if (tags.shop === "supermarket") return "supermarket";
     if (tags.tourism === "hotel") return "hotel";
     if (tags.amenity === "pharmacy") return "pharmacy";
+    if (tags.amenity === "hospital") return "hospital";
     if (tags.amenity === "toilets") return "toilets";
     return null;
   }
@@ -1241,6 +1303,40 @@ class CardataAnalyticsMapCard extends HTMLElement {
     const city = [tags["addr:postcode"], tags["addr:city"] || tags["addr:place"]].filter(Boolean).join(" ").trim();
     const parts = [street, city].filter(Boolean);
     return parts.join(", ") || null;
+  }
+
+  _safeWebUrl(value) {
+    if (typeof value !== "string" || !value.trim()) return null;
+    const raw = value.trim();
+    try {
+      const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
+      return ["http:", "https:"].includes(url.protocol) ? url.href : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _poiConnectorDetails(tags = {}) {
+    const labels = {
+      "socket:type2": "Type 2",
+      "socket:type2_combo": "CCS Type 2",
+      "socket:ccs": "CCS",
+      "socket:chademo": "CHAdeMO",
+      "socket:tesla_supercharger": "Tesla Supercharger",
+      "socket:tesla_destination": "Tesla Destination",
+      "socket:type1": "Type 1",
+      "socket:type1_combo": "CCS Type 1",
+    };
+    const details = [];
+    for (const [key, value] of Object.entries(tags)) {
+      if (!key.startsWith("socket:") || key.endsWith(":output") || key.endsWith(":voltage") || key.endsWith(":current")) continue;
+      const normalized = String(value || "").trim();
+      if (!normalized || ["no", "0"].includes(normalized.toLowerCase())) continue;
+      const label = labels[key] || key.slice(7).replaceAll("_", " ");
+      const output = tags[`${key}:output`];
+      details.push(`${label}: ${normalized}${output ? ` · ${output}` : ""}`);
+    }
+    return details.slice(0, 8);
   }
 
   _distanceKm(lat1, lon1, lat2, lon2) {
@@ -1411,6 +1507,11 @@ class CardataAnalyticsMapCard extends HTMLElement {
           brand: tags.brand || null,
           openingHours: tags.opening_hours || null,
           capacity: tags.capacity || null,
+          phone: tags.phone || tags["contact:phone"] || null,
+          website: this._safeWebUrl(tags.website || tags["contact:website"] || null),
+          access: tags.access || null,
+          fee: tags.fee || null,
+          connectors: category === "charging" ? this._poiConnectorDetails(tags) : [],
         });
       }
       results.sort((a, b) => this._distanceKm(vehicle.lat, vehicle.lon, a.lat, a.lon)
@@ -1442,7 +1543,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
       const data = JSON.parse(raw);
       if (["osm", "topo", "satellite", "gps"].includes(data.mode)) this._mode = data.mode;
       if (["osm", "topo", "satellite"].includes(data.lastFreeMode)) this._lastFreeMode = data.lastFreeMode;
-      if (Number.isFinite(data.zoom)) this._zoom = Math.max(2, Math.min(19, Number(data.zoom)));
+      if (Number.isFinite(data.zoom)) this._zoom = Math.max(2, Math.min(22, Number(data.zoom)));
       if (data.center && Number.isFinite(data.center.lat) && Number.isFinite(data.center.lon)) {
         this._center = { lat: Number(data.center.lat), lon: Number(data.center.lon) };
       }
@@ -1620,7 +1721,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
   }
 
   _changeZoom(delta) {
-    this._zoom = Math.max(2, Math.min(19, Math.round(this._zoom + delta)));
+    this._zoom = Math.max(2, Math.min(this._tileProvider().maxZoom, Math.round(this._zoom + delta)));
     this._savePreferences();
     this._renderMap(true);
   }
@@ -1676,13 +1777,22 @@ class CardataAnalyticsMapCard extends HTMLElement {
     if (effectiveMode === "satellite") {
       const customUrl = typeof this._config.satellite_url === "string" ? this._config.satellite_url.trim() : "";
       const customAttribution = typeof this._config.satellite_attribution === "string" ? this._config.satellite_attribution.trim() : "";
+      const validTemplate = /^https:\/\//i.test(customUrl)
+        && ["{z}", "{x}", "{y}"].every((token) => customUrl.includes(token));
+      if (!validTemplate || !customAttribution) {
+        return {
+          id: "satellite-unconfigured",
+          url: null,
+          maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
+          attribution: "",
+          unavailableMessage: "Satellitenansicht ist nicht konfiguriert. Bitte satellite_url (HTTPS mit {z}/{x}/{y}) und satellite_attribution setzen.",
+        };
+      }
       return {
-        id: customUrl ? `satellite-custom:${customUrl}` : "satellite-esri",
-        url: customUrl
-          ? (z, x, y) => customUrl.split("{z}").join(String(z)).split("{x}").join(String(x)).split("{y}").join(String(y))
-          : (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
+        id: `satellite-custom:${customUrl}`,
+        url: (z, x, y) => customUrl.split("{z}").join(String(z)).split("{x}").join(String(x)).split("{y}").join(String(y)),
         maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
-        attribution: customAttribution || `Tiles © <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community`,
+        attribution: this._esc(customAttribution),
       };
     }
     if (effectiveMode === "topo") {
@@ -1733,19 +1843,21 @@ class CardataAnalyticsMapCard extends HTMLElement {
 
     if (forceTiles || tileSignature !== this._lastTileSignature) {
       const frag = document.createDocumentFragment();
-      for (let ty = minY; ty <= maxY; ty++) {
-        for (let tx = minX; tx <= maxX; tx++) {
-          const wrappedX = ((tx % n) + n) % n;
-          const img = document.createElement("img");
-          img.className = "tile";
-          img.alt = "";
-          img.draggable = false;
-          img.decoding = "async";
-          img.loading = "eager";
-          img.dataset.tx = String(tx);
-          img.dataset.ty = String(ty);
-          img.src = provider.url(this._zoom, wrappedX, ty);
-          frag.appendChild(img);
+      if (provider.url) {
+        for (let ty = minY; ty <= maxY; ty++) {
+          for (let tx = minX; tx <= maxX; tx++) {
+            const wrappedX = ((tx % n) + n) % n;
+            const img = document.createElement("img");
+            img.className = "tile";
+            img.alt = "";
+            img.draggable = false;
+            img.decoding = "async";
+            img.loading = "eager";
+            img.dataset.tx = String(tx);
+            img.dataset.ty = String(ty);
+            img.src = provider.url(this._zoom, wrappedX, ty);
+            frag.appendChild(img);
+          }
         }
       }
       tiles.replaceChildren(frag);
@@ -1793,7 +1905,10 @@ class CardataAnalyticsMapCard extends HTMLElement {
     const empty = this.shadowRoot.getElementById("map-empty");
     const allGpsVehicles = this._vehicles().filter((v) => v.valid);
     if (empty) {
-      if (!allGpsVehicles.length) {
+      if (provider.unavailableMessage) {
+        empty.textContent = provider.unavailableMessage;
+        empty.classList.add("show");
+      } else if (!allGpsVehicles.length) {
         empty.textContent = "Keine gültige Fahrzeugposition verfügbar. Bitte Latitude und Longitude beim Fahrzeug konfigurieren.";
         empty.classList.add("show");
       } else if (!visible.length) {
@@ -2135,8 +2250,15 @@ class CardataAnalyticsMapCard extends HTMLElement {
     const def = defs[poi.category] || { label: "POI", icon: "mdi:map-marker" };
     const vehicle = this._selectedVehicle() || this._visibleVehicles()[0] || null;
     const distance = vehicle ? this._distanceKm(vehicle.lat, vehicle.lon, poi.lat, poi.lon) : null;
-    const detailParts = [poi.operator, poi.brand, poi.openingHours ? `Öffnung: ${poi.openingHours}` : null, poi.capacity ? `Kapazität: ${poi.capacity}` : null]
-      .filter(Boolean);
+    const detailParts = [
+      poi.operator ? `Betreiber: ${poi.operator}` : null,
+      poi.brand && poi.brand !== poi.operator ? `Marke: ${poi.brand}` : null,
+      poi.openingHours ? `Öffnung: ${poi.openingHours}` : null,
+      poi.capacity ? `Kapazität: ${poi.capacity}` : null,
+      poi.access ? `Zugang: ${poi.access}` : null,
+      poi.fee ? `Gebühr: ${poi.fee}` : null,
+      ...(Array.isArray(poi.connectors) ? poi.connectors : []),
+    ].filter(Boolean);
     const osmUrl = poi.osmType && poi.osmId
       ? `https://www.openstreetmap.org/${encodeURIComponent(poi.osmType)}/${encodeURIComponent(poi.osmId)}`
       : null;
@@ -2144,6 +2266,10 @@ class CardataAnalyticsMapCard extends HTMLElement {
       <div class="popup-head"><div><strong><ha-icon icon="${this._esc(def.icon)}"></ha-icon>${this._esc(poi.name)}</strong><div>${this._esc(poi.address || `${poi.lat.toFixed(6)}, ${poi.lon.toFixed(6)}`)}</div></div><button id="poi-popup-close" aria-label="Schließen"><ha-icon icon="mdi:close"></ha-icon></button></div>
       <div class="poi-popup-meta"><span>${this._esc(def.label)}</span>${distance != null ? `<span>${this._formatNumber(distance, 1)} km vom Fahrzeug</span>` : ""}</div>
       ${detailParts.length ? `<div class="poi-details">${this._esc(detailParts.join(" · "))}</div>` : ""}
+      ${(poi.phone || poi.website) ? `<div class="poi-contact">
+        ${poi.phone ? `<span><ha-icon icon="mdi:phone"></ha-icon>${this._esc(poi.phone)}</span>` : ""}
+        ${poi.website ? `<a href="${this._esc(poi.website)}" target="_blank" rel="noopener"><ha-icon icon="mdi:web"></ha-icon>Website</a>` : ""}
+      </div>` : ""}
       <div class="popup-actions poi-popup-actions">
         <a href="${this._esc(this._poiNavigationUrl(poi))}" target="_blank" rel="noopener"><ha-icon icon="mdi:navigation-variant"></ha-icon> Navigation</a>
         <a href="${this._esc(this._poiSearchUrl(poi))}" target="_blank" rel="noopener"><ha-icon icon="mdi:google-maps"></ha-icon> Google Maps</a>
@@ -2359,6 +2485,9 @@ class CardataAnalyticsMapCard extends HTMLElement {
       .poi-popup-meta { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
       .poi-popup-meta span { padding:4px 7px; border-radius:8px; background:var(--secondary-background-color); font-size:10px; }
       .poi-details { margin-top:7px; color:var(--secondary-text-color); font-size:10px; line-height:1.4; }
+      .poi-contact { display:flex; gap:8px; flex-wrap:wrap; margin-top:7px; font-size:10px; }
+      .poi-contact span, .poi-contact a { display:inline-flex; align-items:center; gap:4px; color:var(--secondary-text-color); text-decoration:none; }
+      .poi-contact ha-icon { --mdc-icon-size:14px; color:var(--primary-color); }
       .poi-popup-actions { flex-wrap:wrap; }
       .poi-popup-actions a { min-width:90px; }
       .map-empty { display:none; position:absolute; z-index:35; left:50%; top:50%; transform:translate(-50%,-50%); width:min(420px,calc(100% - 36px)); box-sizing:border-box; padding:14px 16px; border-radius:12px; background:color-mix(in srgb, var(--card-background-color) 94%, transparent); box-shadow:0 2px 12px rgba(0,0,0,.2); text-align:center; font-size:12px; color:var(--secondary-text-color); }

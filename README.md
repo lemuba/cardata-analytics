@@ -166,6 +166,8 @@ The analytics card automatically expands when additional vehicles are added and 
 - Shared date and preset controls
 - Current vehicle address when GPS is configured
 - **Google Maps** button next to the current address
+- GPS location freshness such as “Standort vor 8 Min. aktualisiert”
+- No empty/error location row when GPS/address data is unavailable
 
 ### Vehicle map card
 
@@ -197,18 +199,18 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 
 #### Satellite layer
 
-The built-in Satellite mode uses the public Esri World Imagery raster-tile endpoint and displays the corresponding attribution directly on the map. No Google Maps API key is used for the satellite layer. Map providers can change availability or terms independently of Cardata Analytics.
+The card includes a **Satellite** mode, but version 0.1.20 deliberately does **not** hard-code a third-party commercial satellite tile endpoint without credentials. Current mainstream high-resolution imagery services generally require an account/token and provider-specific attribution/usage terms; using undocumented Google tiles or assuming that a legacy unauthenticated endpoint is permanently permitted would not be a clean default.
 
-An advanced installation may override the satellite tile source in the card configuration:
+Instead, the satellite layer is provider-capable and is configured explicitly in the Lovelace card:
 
 ```yaml
 type: custom:cardata-analytics-map-card
-satellite_url: https://example.invalid/tiles/{z}/{x}/{y}.jpg
-satellite_attribution: My imagery provider
+satellite_url: https://tiles.example.com/{z}/{x}/{y}.jpg?key=YOUR_PROVIDER_KEY
+satellite_attribution: Imagery © Your provider and its data suppliers
 satellite_max_zoom: 19
 ```
 
-When a custom satellite source is configured, the user is responsible for that provider's access requirements, attribution and usage terms.
+`satellite_url` must be HTTPS and contain `{z}`, `{x}` and `{y}` placeholders. `satellite_attribution` is required and remains visible in the map. If either setting is missing or invalid, Satellite mode shows a clear configuration message instead of silently using an unofficial tile source. Provider access credentials, permitted use and exact attribution remain the responsibility of the configured provider/account.
 
 #### Nearby POIs
 
@@ -224,6 +226,7 @@ Available filters in 0.1.20:
 - Supermarkets
 - Hotels
 - Pharmacies
+- Hospitals
 - Public toilets
 
 POIs are queried from OpenStreetMap through the public Overpass API only after POI filters are enabled. Cardata Analytics combines selected filters into one request, debounces filter changes, enforces a minimum delay between network requests, backs off after rate-limit responses, limits displayed results, and caches successful query results in browser-local storage for 15 minutes. This is designed for occasional personal dashboard use rather than continuous or high-volume POI harvesting.
@@ -239,7 +242,7 @@ poi_max_results: 500
 
 `overpass_url` must use HTTPS. `poi_cache_minutes` is clamped to 5–120 minutes and `poi_max_results` to 50–1000.
 
-Nearby POIs are clustered automatically when several markers overlap at the current zoom level. Clicking a cluster zooms further in. Clicking an individual POI shows its category, available OSM address/details and straight-line distance from the selected vehicle.
+Nearby POIs are clustered automatically when several markers overlap at the current zoom level. Clicking a cluster zooms further in. Clicking an individual POI shows its category, available OSM address/details and straight-line distance from the selected vehicle. When present in OSM, the popup also includes opening hours, operator/brand, phone, website, access/fee information, capacity and charging-connector tags.
 
 Every POI popup offers:
 

@@ -3,15 +3,15 @@
 
 ## 0.1.20
 
-- Added the current vehicle address directly to each vehicle section in `custom:cardata-analytics-card`, including a Google Maps button when GPS/address data is configured.
-- Added a **Satellite** map mode to `custom:cardata-analytics-map-card`, using Esri World Imagery by default with visible provider attribution.
-- Added optional card settings for a custom satellite tile URL, attribution text and maximum zoom.
+- Added the current vehicle address directly to each vehicle section in `custom:cardata-analytics-card`, including GPS freshness and a Google Maps button; the location row stays hidden when GPS/address data is unavailable.
+- Added a **Satellite** map mode to `custom:cardata-analytics-map-card` with an explicit, provider-capable HTTPS tile configuration instead of relying on undocumented or unauthenticated commercial imagery endpoints.
+- Added card settings for satellite tile URL, required attribution text and maximum zoom.
 - Added an opt-in **POI** panel centred on the selected vehicle.
-- Added filterable POI categories for EV charging stations, workshops, restaurants, cafés, parking, supermarkets, hotels, pharmacies and public toilets.
+- Added filterable POI categories for EV charging stations, workshops, restaurants, cafés, parking, supermarkets, hotels, pharmacies, hospitals and public toilets.
 - Added 2/5/10/25 km POI search radii.
 - Added browser-side OpenStreetMap Overpass queries with debounce, a minimum request interval, 429/406 backoff, a 500-result display limit and 15-minute browser-local caching.
 - Added automatic marker clustering for dense POI results.
-- Added POI popups with category, available address/details and straight-line distance from the selected vehicle.
+- Added POI popups with category, available address/details, straight-line distance from the selected vehicle and optional opening hours, operator, phone, website, access/fee and charging-connector details when present in OSM.
 - Added **Navigation** links using exact POI coordinates in Google Maps directions URLs, plus Google Maps location and OpenStreetMap source links.
 - Persist POI filters/radius together with the existing browser-local map preferences.
 - Kept the analytics calculations, daily ledger, date-range logic and Nominatim reverse-geocoding behavior unchanged from 0.1.19 apart from the integration/User-Agent version bump.
