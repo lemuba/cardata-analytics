@@ -32,12 +32,13 @@ from .const import (
 from .controller import GlobalRangeController
 from .runtime import VehicleRuntime
 from .poi import async_register_websocket
+from .poi_templates import async_register_websocket as async_register_template_websocket
 
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.38.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.38"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.39.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.39"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
@@ -120,6 +121,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     # POI network access runs server-side through Home Assistant so Lovelace
     # browsers and Companion WebViews do not depend on third-party CORS.
     async_register_websocket(hass)
+    async_register_template_websocket(hass)
     frontend_path = Path(__file__).parent / "frontend"
     await hass.http.async_register_static_paths(
         [StaticPathConfig(FRONTEND_URL, str(frontend_path), False)]

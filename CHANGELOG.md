@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.39
+
+- Reworked the POI panel into a compact three-zone layout: sticky vehicle/template/category-search controls at the top, a dedicated scrollable category accordion in the middle, and always-available general search/charging/radius/actions/status controls at the bottom.
+- Added a responsive mobile bottom-sheet layout for narrow/iPhone-sized dashboards with safe-area padding, 44 px touch targets, compact category chips and one-open-group-at-a-time accordion behavior.
+- Added an explicit POI vehicle selector plus crosshair focus action. Selecting a vehicle makes it the POI search center and focuses/zooms the shared MapLibre camera without enabling GPS follow.
+- Category groups now start collapsed and display selected/total counts; selected categories are shown as removable compact chips while all 57 POI categories remain available.
+- Custom POI templates are now stored globally in Home Assistant `.storage` through dedicated websocket commands, making saved templates available across browsers, iPhone/iPad and Companion App.
+- Added one-time migration of existing browser-local custom POI templates to the global backend store with conflict-safe imported names. Current UI/filter state remains local per device.
+- Existing MapLibre marker/follow/fullscreen behavior, Open Charge Map provider/cache logic, general POI query logic and analytics/ledger logic remain unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.39.js?v=0.1.39`.
+
 ## 0.1.38
 
 - Fixed individual vehicle **Follow** / vehicle-focus after the MapLibre camera migration. Follow now drives the MapLibre camera directly with `easeTo()` instead of relying on the legacy center/zoom state synchronization path.
