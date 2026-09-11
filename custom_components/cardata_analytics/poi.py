@@ -108,7 +108,7 @@ POI_CLAUSES: dict[str, tuple[str, ...]] = {
     "charging": ('["amenity"="charging_station"]',),
     "fuel": ('["amenity"="fuel"]',),
     "workshop": ('["shop"="car_repair"]', '["craft"="car_repair"]'),
-    "restaurant": ('["amenity"="restaurant"]',),
+    "restaurant": ('["amenity"="restaurant"]', '["amenity"="fast_food"]', '["amenity"="food_court"]'),
     "cafe": ('["amenity"="cafe"]',),
     "parking": ('["amenity"="parking"]',),
     "supermarket": ('["shop"="supermarket"]',),
@@ -120,12 +120,34 @@ POI_CLAUSES: dict[str, tuple[str, ...]] = {
 
 
 def _build_text_expressions(search_filter: str, operator_filter: str) -> tuple[str, str]:
-    search_filter = search_filter.strip()[:80]
-    operator_filter = operator_filter.strip()[:80]
-    search_regex = re.escape(search_filter).replace('"', r'\"') if search_filter else ""
-    operator_regex = re.escape(operator_filter).replace('"', r'\"') if operator_filter else ""
+    """Build case-insensitive text filters tolerant of punctuation/spacing.
+
+    OSM chain names commonly contain punctuation or spaces (for example
+    ``McDonald's`` / ``Burger King``), while users may type ``McDonalds`` or
+    ``BurgerKing``.  Between the alphanumeric characters of the user input we
+    therefore allow only non-alphanumeric separators.  This keeps the regex
+    selective while making common brand spellings equivalent.  Client-side
+    normalization performs the final match.
+    """
+
+    def _regex(value: str) -> str:
+        raw = value.strip()[:80]
+        if not raw:
+            return ""
+        chars = [ch for ch in raw if ch.isalnum()]
+        if not chars:
+            return re.escape(raw).replace('"', r'\"')
+        # Cap the server-side pattern; the client still applies the complete
+        # normalized search text after the response is received.
+        chars = chars[:48]
+        return "[^A-Za-z0-9]*".join(
+            re.escape(ch).replace('"', r'\"') for ch in chars
+        )
+
+    search_regex = _regex(search_filter)
+    operator_regex = _regex(operator_filter)
     search_expression = (
-        f'[~"^(name|brand|operator|network|addr:street|addr:city|addr:postcode|addr:housename)$"~"{search_regex}",i]'
+        f'[~"^(name|brand|operator|network|cuisine|addr:street|addr:city|addr:postcode|addr:housename)$"~"{search_regex}",i]'
         if search_regex
         else ""
     )
@@ -301,7 +323,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.35 "
+                            "Cardata Analytics/0.1.36 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -965,7 +987,7 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
             headers={
                 "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
                 "Accept-Encoding": "gzip",
-                "User-Agent": "Cardata Analytics/0.1.35 (https://github.com/lemuba/cardata-analytics)",
+                "User-Agent": "Cardata Analytics/0.1.36 (https://github.com/lemuba/cardata-analytics)",
             },
             allow_redirects=True,
         ) as response:
@@ -997,7 +1019,7 @@ async def _async_discover_bnetza_csv_urls(hass: HomeAssistant) -> list[str]:
     for page_url in BNETZA_PAGE_URLS:
         try:
             async with asyncio.timeout(12.0):
-                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.35"}) as response:
+                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.36"}) as response:
                     if response.status != 200:
                         raise RuntimeError(f"HTTP {response.status}")
                     page = await response.text(errors="replace")
@@ -1053,7 +1075,7 @@ async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
                         headers={
                             "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
                             "Accept-Encoding": "identity",
-                            "User-Agent": "Cardata Analytics/0.1.35",
+                            "User-Agent": "Cardata Analytics/0.1.36",
                         },
                         allow_redirects=True,
                     ) as response:
@@ -1444,7 +1466,7 @@ async def _async_fetch_ocm_reference_data(
     session = async_get_clientsession(hass)
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.35 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.36 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_REFERENCE_HTTP_TIMEOUT_SECONDS):
         async with session.get(
@@ -1688,7 +1710,7 @@ async def _async_fetch_ocm_area(
     params.update(_ocm_server_filter_params(references, msg))
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.35 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.36 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_HTTP_TIMEOUT_SECONDS):
         async with session.get(OCM_API_URL, params=params, headers=headers) as response:

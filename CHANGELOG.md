@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.36
+
+- Fixed **Fit all vehicles** after the MapLibre migration: the toolbar `Alle` action now uses MapLibre `fitBounds()` with panel-aware padding and reliably exits GPS follow before fitting.
+- Expanded the **Restaurants** category to OSM `amenity=fast_food` and `amenity=food_court`, so chains such as McDonald's and Burger King are included.
+- Improved general POI text search with punctuation/spacing normalization (for example `McDonalds`, `Mc Donalds`, and `McDonald's`) and broader OSM name/brand/cuisine matching.
+- Replaced browser-native fullscreen activation with Cardata's persistent CSS fullscreen mode. Opening Google Maps/Navigation in a new tab no longer collapses the dashboard map when returning; Escape still exits fullscreen.
+- Fullscreen intent is kept in `sessionStorage` so Home Assistant/WebView lifecycle recreation in the same tab restores the large map.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.36.js?v=0.1.36`.
+
 ## 0.1.35
 
 - Unified all map rendering on **MapLibre**. OpenFreeMap/OSM, OpenTopoMap and Satellite now use the same camera/projection instead of mixing MapLibre with a separate hand-positioned raster/HTML overlay engine.
