@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.35
+
+- Unified all map rendering on **MapLibre**. OpenFreeMap/OSM, OpenTopoMap and Satellite now use the same camera/projection instead of mixing MapLibre with a separate hand-positioned raster/HTML overlay engine.
+- Vehicle positions are now geographic MapLibre markers. They stay attached to their latitude/longitude while panning, zooming, GPS-following and switching basemaps.
+- POIs are now a clustered MapLibre GeoJSON source. Cluster positions, individual POIs and their selection state move with the map camera instead of being recalculated as independent screen pixels.
+- Vehicle and POI popup placement now uses `Map.project()` from the same renderer, eliminating drift between popup anchors and map geometry while the map moves.
+- MapLibre now owns mouse/touch panning, wheel zoom and double-click zoom; the previous parallel custom drag calculations are no longer wired to the map.
+- Fixed charging filters leaking into normal POIs: the operator/network filter is applied only to charging stations, and the backend no longer sends a charging operator filter to general Overpass queries.
+- When **Ladestationen** is manually switched off, Cardata clears the previous charging search text, operator/network, connector, minimum-power and unknown-power settings before querying other POI categories.
+- Reorganized the POI panel so general text search and charging-specific operator/network filters are visually separated.
+- Open Charge Map integration, persistent OCM reference/area caches, 2–200 km radii, presets, Satellite/Topo/OSM/GPS modes and all Analytics/Daily Ledger/range logic remain intact.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.35.js?v=0.1.35`.
+
 ## 0.1.34
 
 - Reworked the Open Charge Map client for lower payloads and fewer duplicate requests. Cardata now fetches OCM `/referencedata` once, stores a reduced persistent lookup cache, and decodes compact station responses locally.
