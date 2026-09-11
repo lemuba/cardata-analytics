@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.37 is the current separate interactive vehicle map:
+Version 0.1.38 is the current separate interactive vehicle map:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -197,7 +197,7 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 
 From **0.1.36**, OpenFreeMap, Topo and Satellite all run through the same MapLibre camera. The 0.1.36 map additionally uses MapLibre `fitBounds()` for the **Alle** vehicle action and Cardata CSS fullscreen so external navigation tabs do not collapse the large dashboard map when returning. Vehicle markers are MapLibre geographic markers and POIs are a clustered MapLibre GeoJSON source. Panning/zooming therefore moves basemap, vehicle positions, POIs and open popups in one projection instead of synchronizing independent HTML pixel overlays.
 
-Version **0.1.37** keeps that unified MapLibre renderer and expands the POI catalogue/search layer without changing the map projection, vehicle markers, fullscreen handling or analytics/ledger backend.
+Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories while keeping the unified MapLibre renderer. Version **0.1.38** fixes individual vehicle Follow/focus by driving the MapLibre camera directly, without changing POI, OCM, analytics or ledger behavior.
 
 `height` is optional and is specified in pixels. The default is `520`.
 
@@ -226,7 +226,7 @@ For a custom provider, `satellite_url` must be HTTPS and contain `{z}`, `{x}` an
 
 POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km, 25 km, 50 km, 100 km, 150 km and 200 km**.
 
-Available POI categories in 0.1.37 are grouped in the UI and can be searched by category name:
+Available POI categories in 0.1.37+ are grouped in the UI and can be searched by category name:
 
 - **Auto & Mobility:** EV charging, fuel, workshops, car wash, tyre service, car parts, car rental, parking, parking garages, P+R
 - **Food & Drink:** restaurants/fast food/food courts, cafés, bakeries, ice cream, bars/pubs, beer gardens
@@ -239,7 +239,7 @@ Available POI categories in 0.1.37 are grouped in the UI and can be searched by 
 - **Leisure & Sights:** museums, attractions, viewpoints, castles, monuments/memorials, zoos, theme parks, swimming pools
 - **Emergency:** police, fire stations, ambulance stations
 
-POI filters in 0.1.37 can be combined freely. In addition to category and radius, the panel supports:
+POI filters in 0.1.37+ can be combined freely. In addition to category and radius, the panel supports:
 
 - a general free-text POI search across name, address, brand, operator and network
 - a charging-only operator/network filter such as `IONITY` or `Tesla`
@@ -251,7 +251,7 @@ POI filters in 0.1.37 can be combined freely. In addition to category and radius
 
 When **Ladestationen** is switched off manually, Cardata clears the charging-specific operator/network, connector, power and unknown-power filters and also clears the previous charging text search. The operator/network filter is never applied to normal cafés, restaurants, fuel stations or other general POIs.
 
-Custom presets store the selected categories, radius, text/operator filters, connector, minimum power and unknown-power option. They intentionally remain browser-local in 0.1.37; this keeps the analytics/ledger backend untouched. General free-text search is applied locally to the already loaded category/radius dataset, so loading a saved preset such as `Restaurants + Donalds` reuses the same restaurant cache as manual filtering and does not trigger another Overpass request.
+Custom presets store the selected categories, radius, text/operator filters, connector, minimum power and unknown-power option. They intentionally remain browser-local; this keeps the analytics/ledger backend untouched. General free-text search is applied locally to the already loaded category/radius dataset, so loading a saved preset such as `Restaurants + Donalds` reuses the same restaurant cache as manual filtering and does not trigger another Overpass request.
 
 General non-charging POIs are queried from OpenStreetMap through public Overpass instances only after POI filters are enabled. The Lovelace card sends the request to Cardata Analytics over Home Assistant's websocket connection and Home Assistant performs the external query, so browser CORS/Companion WebView networking is not a prerequisite. The latest-request-wins state machine, watchdog, bounded retries, same-query single-flight deduplication, endpoint cooldowns and manual **Aktualisieren** cache bypass remain in place. Very broad 100–200 km searches still benefit from name/operator filters for these general Overpass POIs.
 
@@ -366,9 +366,9 @@ MIT
 If a vehicle cloud temporarily stops providing a live odometer value, Cardata Analytics keeps the last valid odometer as a frozen fallback. A last-known value from a previous calendar day is used as the current day's baseline, so historical distance is not counted again as today's distance. When the source returns, new distance accumulates from that frozen baseline. No distance is invented while the source is offline.
 
 
-### Open Charge Map (v0.1.37)
+### Open Charge Map (v0.1.34+)
 
-Version 0.1.37 keeps the v0.1.34 OCM `/referencedata` lookup-table cache (operators, connection types, status/usage types and data providers) and requests charging locations with `compact=true&verbose=false`. The compact numeric IDs are decoded locally. If reference data cannot be refreshed, a still-valid stale reference cache is used; if no reference cache exists at all, Cardata falls back to a normal non-compact OCM response rather than failing the charging search. Identical area requests are single-flight deduplicated across cards and rapid filter changes.
+Version 0.1.34+ keeps the v0.1.34 OCM `/referencedata` lookup-table cache (operators, connection types, status/usage types and data providers) and requests charging locations with `compact=true&verbose=false`. The compact numeric IDs are decoded locally. If reference data cannot be refreshed, a still-valid stale reference cache is used; if no reference cache exists at all, Cardata falls back to a normal non-compact OCM response rather than failing the charging search. Identical area requests are single-flight deduplicated across cards and rapid filter changes.
 Targeted operator/connector presets (for example **IONITY + CCS**) are also narrowed server-side using OCM reference IDs, while power/text filtering remains local. This keeps 100–200 km searches smaller and reduces the risk of hitting broad result limits. A broader cached area may still be reused for narrower filters.
 
 

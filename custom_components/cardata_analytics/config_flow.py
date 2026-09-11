@@ -205,7 +205,7 @@ class CardataAnalyticsConfigFlow(config_entries.ConfigFlow, domain="cardata_anal
                     params={"key": key},
                     headers={
                         "Accept": "application/json",
-                        "User-Agent": "Cardata Analytics/0.1.37 (https://github.com/lemuba/cardata-analytics)",
+                        "User-Agent": "Cardata Analytics/0.1.38 (https://github.com/lemuba/cardata-analytics)",
                     },
                 ) as response:
                     body = await response.read()

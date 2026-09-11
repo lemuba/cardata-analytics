@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.38
+
+- Fixed individual vehicle **Follow** / vehicle-focus after the MapLibre camera migration. Follow now drives the MapLibre camera directly with `easeTo()` instead of relying on the legacy center/zoom state synchronization path.
+- Added one shared vehicle-focus helper used by the popup **Folgen** button, the vehicle-panel crosshair button and the top-level GPS mode.
+- Added a short programmatic-camera guard so a MapLibre camera animation started by Follow cannot be mistaken for manual panning and immediately cancel GPS follow.
+- Clicking another vehicle while GPS follow is active now switches follow to that vehicle and recenters/zooms immediately.
+- `Alle` / fit-all behavior, MapLibre POI rendering, the 57-category POI catalogue/search, Open Charge Map integration and analytics/ledger logic remain unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.38.js?v=0.1.38`.
+
 ## 0.1.37
 
 - General POI text search is now purely local on the already loaded category/radius cache. Saved presets such as `Restaurants + Donalds` therefore behave exactly like loading Restaurants first and typing `Donalds` afterwards, without creating a second Overpass request/cache namespace.
