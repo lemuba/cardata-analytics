@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.19";
+const CARD_VERSION = "0.1.20";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -231,6 +231,7 @@ class CardataAnalyticsCard extends HTMLElement {
       ["soc", "soc"],
       ["soh", "soh"],
       ["range", "range"],
+      ["current_address", "current_address"],
     ];
     for (const [suffix, key] of suffixMap) {
       if (uid.endsWith(`_${suffix}`)) return key;
@@ -264,6 +265,21 @@ class CardataAnalyticsCard extends HTMLElement {
     return this._hass?.states?.[entityId]?.attributes?.unit_of_measurement || fallback;
   }
 
+  _addressText(entityId) {
+    const obj = entityId ? this._hass?.states?.[entityId] : null;
+    const value = obj?.state;
+    return !value || ["unknown", "unavailable", "none"].includes(String(value).toLowerCase())
+      ? "Standortadresse nicht verfügbar"
+      : String(value);
+  }
+
+  _googleMapsUrl(entityId) {
+    if (!entityId || !this._hass) return null;
+    const stateObj = this._hass.states[entityId];
+    const url = stateObj?.attributes?.google_maps_url;
+    return typeof url === "string" && url.startsWith("https://") ? url : null;
+  }
+
   _stateSignature() {
     if (!this._hass || !this._registryLoaded) return null;
     const parts = [];
@@ -277,6 +293,14 @@ class CardataAnalyticsCard extends HTMLElement {
       let extra = "";
       if (entityId.startsWith("select.")) {
         extra = `|${JSON.stringify(stateObj.attributes?.options || [])}`;
+      }
+      const registryEntry = this._entities.find((entry) => entry.entity_id === entityId);
+      if ((registryEntry?.unique_id || "").endsWith("_current_address")) {
+        extra += `|location=${JSON.stringify({
+          google_maps_url: stateObj.attributes?.google_maps_url || "",
+          last_geocoded: stateObj.attributes?.last_geocoded || "",
+          using_cached_address: stateObj.attributes?.using_cached_address === true,
+        })}`;
       }
       if (Object.prototype.hasOwnProperty.call(stateObj.attributes || {}, "data_complete")) {
         extra += `|coverage=${JSON.stringify({
@@ -469,6 +493,11 @@ class CardataAnalyticsCard extends HTMLElement {
           </div>
         </div>
       </div>
+      ${e.current_address ? `<div class="location-row">
+        <ha-icon icon="mdi:map-marker"></ha-icon>
+        <span class="location-text" data-bind="${id}:address">${this._esc(this._addressText(e.current_address))}</span>
+        <a class="maps-btn${this._googleMapsUrl(e.current_address) ? "" : " hidden"}" data-bind-link="${id}:maps" href="${this._esc(this._googleMapsUrl(e.current_address) || "#")}" target="_blank" rel="noopener" title="In Google Maps öffnen"><ha-icon icon="mdi:google-maps"></ha-icon><span>Maps</span></a>
+      </div>` : ""}
       <div class="metrics">
         ${this._metric(e.battery_capacity, "Kapazität", "kWh", 2, "mdi:battery-high", `${id}:capacity`)}
         ${this._metric(e.mileage, "Kilometerstand", "km", 1, "mdi:counter", `${id}:mileage`)}
@@ -522,6 +551,16 @@ class CardataAnalyticsCard extends HTMLElement {
     this._setText(`${id}:capacity`, this._num(e.battery_capacity, 2));
     this._setText(`${id}:mileage`, this._num(e.mileage, 1));
     this._setText(`${id}:energy-total`, this._num(e.energy_consumed_total, 2));
+
+    if (e.current_address) {
+      this._setText(`${id}:address`, this._addressText(e.current_address));
+      const link = this.shadowRoot?.querySelector(`[data-bind-link="${CSS.escape(`${id}:maps`)}"]`);
+      if (link) {
+        const url = this._googleMapsUrl(e.current_address);
+        link.classList.toggle("hidden", !url);
+        if (url && link.getAttribute("href") !== url) link.setAttribute("href", url);
+      }
+    }
 
     for (const period of ["today", "week", "month", "year"]) {
       this._setText(`${id}:${period}:distance`, this._num(e[`distance_${period}`], 1));
@@ -726,6 +765,12 @@ class CardataAnalyticsCard extends HTMLElement {
       .car-dot { width:42px; height:42px; border-radius:50%; display:grid; place-items:center; color:white; flex:0 0 auto; }
       .car-dot ha-icon { --mdc-icon-size:23px; }
       .sub { margin-top:4px; font-size:14px; line-height:1.4; }
+      .location-row { display:flex; align-items:center; gap:7px; margin:-3px 0 10px 54px; min-width:0; color:var(--secondary-text-color); font-size:12px; }
+      .location-row > ha-icon { --mdc-icon-size:17px; color:var(--primary-color); flex:0 0 auto; }
+      .location-text { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+      .maps-btn { margin-left:auto; flex:0 0 auto; display:inline-flex; align-items:center; gap:4px; min-height:30px; padding:0 9px; border:1px solid var(--divider-color); border-radius:9px; color:var(--primary-text-color); background:var(--secondary-background-color); text-decoration:none; font-weight:700; }
+      .maps-btn ha-icon { --mdc-icon-size:16px; color:var(--primary-color); }
+      .maps-btn.hidden { display:none; }
 
       .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:9px; }
       .metric { display:flex; align-items:center; gap:10px; padding:11px 12px; background:var(--secondary-background-color); border-radius:12px; min-width:0; }
@@ -823,6 +868,24 @@ class CardataAnalyticsMapCard extends HTMLElement {
     this._mapInitialized = false;
     this._lastTileSignature = null;
     this._storageKey = "cardata_analytics_map_card_v1";
+
+    // POIs are opt-in. Queries are debounced, rate-limited and cached locally
+    // so public Overpass infrastructure is never polled continuously.
+    this._poiCategories = new Set();
+    this._poiRadiusKm = 5;
+    this._poiResults = [];
+    this._poiSourceVehicleId = null;
+    this._poiSourceLat = null;
+    this._poiSourceLon = null;
+    this._poiLoading = false;
+    this._poiError = "";
+    this._poiFetchTimer = null;
+    this._poiLastNetworkAt = 0;
+    this._poiBackoffUntil = 0;
+    this._poiRequestToken = 0;
+    this._selectedPoiId = null;
+    this._poiCacheTtlMs = 15 * 60 * 1000;
+    this._poiMaxResults = 500;
     this.attachShadow({ mode: "open" });
   }
 
@@ -841,6 +904,12 @@ class CardataAnalyticsMapCard extends HTMLElement {
   setConfig(config) {
     this._config = config || {};
     if (config?.storage_key) this._storageKey = String(config.storage_key);
+    if (Number.isFinite(Number(config?.poi_cache_minutes))) {
+      this._poiCacheTtlMs = Math.max(5, Math.min(120, Number(config.poi_cache_minutes))) * 60 * 1000;
+    }
+    if (Number.isFinite(Number(config?.poi_max_results))) {
+      this._poiMaxResults = Math.max(50, Math.min(1000, Math.round(Number(config.poi_max_results))));
+    }
     this._restorePreferences();
   }
 
@@ -859,6 +928,11 @@ class CardataAnalyticsMapCard extends HTMLElement {
       this._eventController.abort();
       this._eventController = null;
     }
+    if (this._poiFetchTimer) {
+      clearTimeout(this._poiFetchTimer);
+      this._poiFetchTimer = null;
+    }
+    this._poiRequestToken += 1;
   }
 
   set hass(hass) {
@@ -1086,19 +1160,299 @@ class CardataAnalyticsMapCard extends HTMLElement {
     return `vor ${days} Tag${days === 1 ? "" : "en"}`;
   }
 
+  _poiDefinitions() {
+    return {
+      charging: {
+        label: "Ladestationen",
+        icon: "mdi:ev-station",
+        clauses: ['["amenity"="charging_station"]'],
+      },
+      workshop: {
+        label: "Werkstätten",
+        icon: "mdi:wrench",
+        clauses: ['["shop"="car_repair"]', '["craft"="car_repair"]'],
+      },
+      restaurant: {
+        label: "Restaurants",
+        icon: "mdi:silverware-fork-knife",
+        clauses: ['["amenity"="restaurant"]'],
+      },
+      cafe: {
+        label: "Cafés",
+        icon: "mdi:coffee",
+        clauses: ['["amenity"="cafe"]'],
+      },
+      parking: {
+        label: "Parkplätze",
+        icon: "mdi:parking",
+        clauses: ['["amenity"="parking"]'],
+      },
+      supermarket: {
+        label: "Supermärkte",
+        icon: "mdi:cart-outline",
+        clauses: ['["shop"="supermarket"]'],
+      },
+      hotel: {
+        label: "Hotels",
+        icon: "mdi:bed",
+        clauses: ['["tourism"="hotel"]'],
+      },
+      pharmacy: {
+        label: "Apotheken",
+        icon: "mdi:pharmacy",
+        clauses: ['["amenity"="pharmacy"]'],
+      },
+      toilets: {
+        label: "Toiletten",
+        icon: "mdi:human-male-female",
+        clauses: ['["amenity"="toilets"]'],
+      },
+    };
+  }
+
+  _poiCategoryForTags(tags = {}) {
+    if (tags.amenity === "charging_station") return "charging";
+    if (tags.shop === "car_repair" || tags.craft === "car_repair") return "workshop";
+    if (tags.amenity === "restaurant") return "restaurant";
+    if (tags.amenity === "cafe") return "cafe";
+    if (tags.amenity === "parking") return "parking";
+    if (tags.shop === "supermarket") return "supermarket";
+    if (tags.tourism === "hotel") return "hotel";
+    if (tags.amenity === "pharmacy") return "pharmacy";
+    if (tags.amenity === "toilets") return "toilets";
+    return null;
+  }
+
+  _poiCoordinates(element) {
+    const lat = Number(element?.lat ?? element?.center?.lat);
+    const lon = Number(element?.lon ?? element?.center?.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+    return { lat, lon };
+  }
+
+  _poiName(tags = {}, category = "") {
+    const defs = this._poiDefinitions();
+    return String(tags.name || tags.brand || tags.operator || defs[category]?.label || "Point of Interest");
+  }
+
+  _poiAddress(tags = {}) {
+    const street = [tags["addr:street"], tags["addr:housenumber"]].filter(Boolean).join(" ").trim();
+    const city = [tags["addr:postcode"], tags["addr:city"] || tags["addr:place"]].filter(Boolean).join(" ").trim();
+    const parts = [street, city].filter(Boolean);
+    return parts.join(", ") || null;
+  }
+
+  _distanceKm(lat1, lon1, lat2, lon2) {
+    const rad = (value) => value * Math.PI / 180;
+    const earthKm = 6371.0088;
+    const dLat = rad(lat2 - lat1);
+    const dLon = rad(lon2 - lon1);
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return earthKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+  }
+
+  _poiNavigationUrl(poi) {
+    return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${poi.lat},${poi.lon}`)}&travelmode=driving`;
+  }
+
+  _poiSearchUrl(poi) {
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${poi.lat},${poi.lon}`)}`;
+  }
+
+  _poiCacheStorageKey() {
+    return `${this._storageKey}:poi-cache-v1`;
+  }
+
+  _readPoiCache() {
+    try {
+      const raw = localStorage.getItem(this._poiCacheStorageKey());
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  _writePoiCache(cache) {
+    try {
+      const entries = Object.entries(cache || {})
+        .filter(([, value]) => value && Number(value.timestamp) > Date.now() - 24 * 60 * 60 * 1000)
+        .sort((a, b) => Number(b[1].timestamp) - Number(a[1].timestamp))
+        .slice(0, 6);
+      localStorage.setItem(this._poiCacheStorageKey(), JSON.stringify(Object.fromEntries(entries)));
+    } catch (_) { /* localStorage may be unavailable or full */ }
+  }
+
+  _poiCacheKey(vehicle) {
+    const categories = [...this._poiCategories].sort().join(",");
+    return [vehicle.lat.toFixed(3), vehicle.lon.toFixed(3), this._poiRadiusKm, categories].join("|");
+  }
+
+  _schedulePoiLoad(delay = 750, force = false) {
+    // Invalidate an in-flight response as soon as a newer filter/radius/vehicle
+    // selection is scheduled, not only when the replacement request starts.
+    this._poiRequestToken += 1;
+    if (this._poiFetchTimer) clearTimeout(this._poiFetchTimer);
+    this._poiFetchTimer = setTimeout(() => {
+      this._poiFetchTimer = null;
+      this._loadPois(force);
+    }, delay);
+  }
+
+  _buildOverpassQuery(vehicle) {
+    const defs = this._poiDefinitions();
+    const radiusM = Math.max(500, Math.round(this._poiRadiusKm * 1000));
+    const around = `(around:${radiusM},${vehicle.lat.toFixed(6)},${vehicle.lon.toFixed(6)})`;
+    const clauses = [];
+    for (const key of [...this._poiCategories].sort()) {
+      const def = defs[key];
+      if (!def) continue;
+      for (const filter of def.clauses) clauses.push(`nwr${filter}${around};`);
+    }
+    return `[out:json][timeout:20];(${clauses.join("")});out tags center qt ${this._poiMaxResults};`;
+  }
+
+  async _loadPois(force = false) {
+    const vehicle = this._selectedVehicle() || this._visibleVehicles()[0] || null;
+    if (!this._poiCategories.size) {
+      this._poiResults = [];
+      this._poiSourceVehicleId = null;
+      this._poiSourceLat = null;
+      this._poiSourceLon = null;
+      this._poiError = "";
+      this._poiLoading = false;
+      this._selectedPoiId = null;
+      this._renderPoiPanel();
+      this._renderMap(false);
+      return;
+    }
+    if (!vehicle) {
+      this._poiError = "Für die POI-Suche ist ein sichtbares Fahrzeug mit GPS-Position erforderlich.";
+      this._poiLoading = false;
+      this._renderPoiPanel();
+      return;
+    }
+
+    const cacheKey = this._poiCacheKey(vehicle);
+    if (!force) {
+      const cache = this._readPoiCache();
+      const cached = cache[cacheKey];
+      if (cached && Date.now() - Number(cached.timestamp) <= this._poiCacheTtlMs && Array.isArray(cached.results)) {
+        this._poiResults = cached.results;
+        this._poiSourceVehicleId = vehicle.deviceId;
+        this._poiSourceLat = vehicle.lat;
+        this._poiSourceLon = vehicle.lon;
+        this._poiError = "";
+        this._poiLoading = false;
+        this._renderPoiPanel();
+        this._renderMap(false);
+        return;
+      }
+    }
+
+    const now = Date.now();
+    const earliest = Math.max(this._poiLastNetworkAt + 5000, this._poiBackoffUntil);
+    if (now < earliest) {
+      this._poiLoading = true;
+      const waitSeconds = Math.max(1, Math.ceil((earliest - now) / 1000));
+      this._poiError = `POI-Abfrage wird in ${waitSeconds} s fortgesetzt …`;
+      this._renderPoiPanel();
+      this._schedulePoiLoad(earliest - now + 100, force);
+      return;
+    }
+
+    const token = ++this._poiRequestToken;
+    this._poiLoading = true;
+    this._poiError = "";
+    this._renderPoiPanel();
+    this._poiLastNetworkAt = Date.now();
+
+    try {
+      const query = this._buildOverpassQuery(vehicle);
+      const configuredEndpoint = typeof this._config.overpass_url === "string" ? this._config.overpass_url.trim() : "";
+      const endpoint = configuredEndpoint || "https://overpass-api.de/api/interpreter";
+      if (!/^https:\/\//i.test(endpoint)) throw new Error("Overpass endpoint must use HTTPS");
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        body: `data=${encodeURIComponent(query)}`,
+      });
+      if (!response.ok) {
+        if (response.status === 429 || response.status === 406) {
+          this._poiBackoffUntil = Date.now() + 30000;
+        }
+        throw new Error(`Overpass HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      if (token !== this._poiRequestToken) return;
+      const seen = new Set();
+      const results = [];
+      for (const element of payload?.elements || []) {
+        const coords = this._poiCoordinates(element);
+        if (!coords) continue;
+        const tags = element.tags || {};
+        const category = this._poiCategoryForTags(tags);
+        if (!category || !this._poiCategories.has(category)) continue;
+        const id = `${element.type || "osm"}:${element.id}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        results.push({
+          id,
+          osmType: String(element.type || ""),
+          osmId: Number(element.id),
+          lat: coords.lat,
+          lon: coords.lon,
+          category,
+          name: this._poiName(tags, category),
+          address: this._poiAddress(tags),
+          operator: tags.operator || null,
+          brand: tags.brand || null,
+          openingHours: tags.opening_hours || null,
+          capacity: tags.capacity || null,
+        });
+      }
+      results.sort((a, b) => this._distanceKm(vehicle.lat, vehicle.lon, a.lat, a.lon)
+        - this._distanceKm(vehicle.lat, vehicle.lon, b.lat, b.lon));
+      this._poiResults = results.slice(0, this._poiMaxResults);
+      this._poiSourceVehicleId = vehicle.deviceId;
+      this._poiSourceLat = vehicle.lat;
+      this._poiSourceLon = vehicle.lon;
+      this._poiError = results.length >= this._poiMaxResults
+        ? `Die Anzeige ist auf ${this._poiMaxResults} POIs begrenzt. Radius oder Filter ggf. verkleinern.`
+        : "";
+      this._poiLoading = false;
+      const cache = this._readPoiCache();
+      cache[cacheKey] = { timestamp: Date.now(), results: this._poiResults };
+      this._writePoiCache(cache);
+    } catch (err) {
+      if (token !== this._poiRequestToken) return;
+      this._poiLoading = false;
+      this._poiError = `POIs konnten nicht geladen werden: ${err?.message || err}`;
+    }
+    this._renderPoiPanel();
+    this._renderMap(false);
+  }
+
   _restorePreferences() {
     try {
       const raw = localStorage.getItem(this._storageKey);
       if (!raw) return;
       const data = JSON.parse(raw);
-      if (["osm", "topo", "gps"].includes(data.mode)) this._mode = data.mode;
-      if (["osm", "topo"].includes(data.lastFreeMode)) this._lastFreeMode = data.lastFreeMode;
+      if (["osm", "topo", "satellite", "gps"].includes(data.mode)) this._mode = data.mode;
+      if (["osm", "topo", "satellite"].includes(data.lastFreeMode)) this._lastFreeMode = data.lastFreeMode;
       if (Number.isFinite(data.zoom)) this._zoom = Math.max(2, Math.min(19, Number(data.zoom)));
       if (data.center && Number.isFinite(data.center.lat) && Number.isFinite(data.center.lon)) {
         this._center = { lat: Number(data.center.lat), lon: Number(data.center.lon) };
       }
       if (Array.isArray(data.hiddenVehicles)) this._hiddenVehicles = new Set(data.hiddenVehicles.map(String));
       if (data.selectedVehicleId) this._selectedVehicleId = String(data.selectedVehicleId);
+      if (Array.isArray(data.poiCategories)) {
+        const validPoiKeys = new Set(Object.keys(this._poiDefinitions()));
+        this._poiCategories = new Set(data.poiCategories.map(String).filter((key) => validPoiKeys.has(key)));
+      }
+      if ([2, 5, 10, 25].includes(Number(data.poiRadiusKm))) this._poiRadiusKm = Number(data.poiRadiusKm);
     } catch (_) { /* ignore invalid browser storage */ }
   }
 
@@ -1111,6 +1465,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
         center: this._center,
         hiddenVehicles: [...this._hiddenVehicles],
         selectedVehicleId: this._selectedVehicleId,
+        poiCategories: [...this._poiCategories],
+        poiRadiusKm: this._poiRadiusKm,
       }));
     } catch (_) { /* storage may be unavailable */ }
   }
@@ -1146,14 +1502,17 @@ class CardataAnalyticsMapCard extends HTMLElement {
             <div class="mode-group" role="group" aria-label="Kartendarstellung">
               <button class="mode-btn" data-mode="osm">OSM</button>
               <button class="mode-btn" data-mode="topo">Topo</button>
+              <button class="mode-btn" data-mode="satellite"><ha-icon icon="mdi:satellite-variant"></ha-icon> Satellit</button>
               <button class="mode-btn" data-mode="gps"><ha-icon icon="mdi:crosshairs-gps"></ha-icon> GPS</button>
             </div>
             <button class="tool-btn" id="fit" title="Alle sichtbaren Fahrzeuge einpassen"><ha-icon icon="mdi:fit-to-screen-outline"></ha-icon><span>Alle</span></button>
             <button class="tool-btn" id="vehicles-toggle" title="Fahrzeuge ein- oder ausblenden"><ha-icon icon="mdi:car-multiple"></ha-icon><span>Fahrzeuge</span></button>
+            <button class="tool-btn" id="poi-toggle" title="Points of Interest in Fahrzeugnähe"><ha-icon icon="mdi:map-marker-radius"></ha-icon><span>POIs</span></button>
           </div>
           <div class="map-wrap">
             <div class="map" id="map" tabindex="0" aria-label="Fahrzeugkarte" style="--cardata-map-height:${Math.max(330, Math.min(900, Number(this._config.height) || 520))}px">
               <div class="tiles" id="tiles"></div>
+              <div class="poi-markers" id="poi-markers"></div>
               <div class="markers" id="markers"></div>
               <div class="map-empty" id="map-empty"></div>
               <div class="zoom-controls">
@@ -1162,7 +1521,9 @@ class CardataAnalyticsMapCard extends HTMLElement {
               </div>
               <div class="attribution" id="attribution"></div>
               <div class="vehicle-panel hidden" id="vehicle-panel"></div>
+              <div class="poi-panel hidden" id="poi-panel"></div>
               <div class="popup hidden" id="popup"></div>
+              <div class="poi-popup hidden" id="poi-popup"></div>
             </div>
           </div>
         </div>
@@ -1188,6 +1549,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
       }
       this._updateControls();
       this._renderVehiclePanel();
+      this._renderPoiPanel();
+      if (this._poiCategories.size) this._schedulePoiLoad(300, false);
     });
   }
 
@@ -1200,7 +1563,14 @@ class CardataAnalyticsMapCard extends HTMLElement {
     this.shadowRoot.getElementById("zoom-out")?.addEventListener("click", () => this._changeZoom(-1));
     this.shadowRoot.getElementById("fit")?.addEventListener("click", () => this._fitVisibleVehicles(true));
     this.shadowRoot.getElementById("vehicles-toggle")?.addEventListener("click", () => {
+      this.shadowRoot.getElementById("poi-panel")?.classList.add("hidden");
       this.shadowRoot.getElementById("vehicle-panel")?.classList.toggle("hidden");
+    });
+    this.shadowRoot.getElementById("poi-toggle")?.addEventListener("click", () => {
+      this.shadowRoot.getElementById("vehicle-panel")?.classList.add("hidden");
+      const panel = this.shadowRoot.getElementById("poi-panel");
+      panel?.classList.toggle("hidden");
+      if (panel && !panel.classList.contains("hidden")) this._renderPoiPanel();
     });
     this.shadowRoot.getElementById("fullscreen")?.addEventListener("click", () => this._toggleFullscreen());
 
@@ -1230,7 +1600,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
   }
 
   _setMode(mode) {
-    if (!["osm", "topo", "gps"].includes(mode)) return;
+    if (!["osm", "topo", "satellite", "gps"].includes(mode)) return;
     if (mode === "gps") {
       this._mode = "gps";
       const v = this._selectedVehicle() || this._visibleVehicles()[0];
@@ -1258,7 +1628,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
   _startDrag(ev) {
     if (ev.button != null && ev.button !== 0) return;
     const map = this.shadowRoot.getElementById("map");
-    if (!map || ev.target.closest("button, a, .popup, .vehicle-panel")) return;
+    if (!map || ev.target.closest("button, a, .popup, .poi-popup, .vehicle-panel, .poi-panel")) return;
     map.setPointerCapture?.(ev.pointerId);
     const world = this._latLonToWorld(this._center.lat, this._center.lon, this._zoom);
     this._drag = { pointerId: ev.pointerId, x: ev.clientX, y: ev.clientY, worldX: world.x, worldY: world.y };
@@ -1302,7 +1672,20 @@ class CardataAnalyticsMapCard extends HTMLElement {
   }
 
   _tileProvider() {
-    if (this._mode === "topo") {
+    const effectiveMode = this._mode === "gps" ? this._lastFreeMode : this._mode;
+    if (effectiveMode === "satellite") {
+      const customUrl = typeof this._config.satellite_url === "string" ? this._config.satellite_url.trim() : "";
+      const customAttribution = typeof this._config.satellite_attribution === "string" ? this._config.satellite_attribution.trim() : "";
+      return {
+        id: customUrl ? `satellite-custom:${customUrl}` : "satellite-esri",
+        url: customUrl
+          ? (z, x, y) => customUrl.split("{z}").join(String(z)).split("{x}").join(String(x)).split("{y}").join(String(y))
+          : (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
+        maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
+        attribution: customAttribution || `Tiles © <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community`,
+      };
+    }
+    if (effectiveMode === "topo") {
       return {
         id: "topo",
         url: (z, x, y) => `https://${["a", "b", "c"][(x + y) % 3]}.tile.opentopomap.org/${z}/${x}/${y}.png`,
@@ -1395,13 +1778,17 @@ class CardataAnalyticsMapCard extends HTMLElement {
         this._selectedVehicleId = v.deviceId;
         if (this._mode === "gps") this._center = { lat: v.lat, lon: v.lon };
         this._savePreferences();
+        this.shadowRoot?.getElementById("poi-popup")?.classList.add("hidden");
         this._showPopup(v.deviceId);
         this._renderMap();
         this._renderVehiclePanel();
+        this._renderPoiPanel();
+        if (this._poiCategories.size && this._poiSourceVehicleId !== v.deviceId) this._schedulePoiLoad(500, false);
       });
       markerFrag.appendChild(marker);
     }
     markers.replaceChildren(markerFrag);
+    this._renderPoiMarkers(topLeft, width, height, n);
 
     const empty = this.shadowRoot.getElementById("map-empty");
     const allGpsVehicles = this._vehicles().filter((v) => v.valid);
@@ -1421,6 +1808,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     const attribution = this.shadowRoot.getElementById("attribution");
     if (attribution) attribution.innerHTML = provider.attribution;
     this._positionPopup();
+    this._positionPoiPopup();
   }
 
   _fitVisibleVehicles(save = true) {
@@ -1471,11 +1859,21 @@ class CardataAnalyticsMapCard extends HTMLElement {
   _updateFromHass() {
     const selected = this._selectedVehicle();
     if (this._mode === "gps" && selected) this._center = { lat: selected.lat, lon: selected.lon };
+    if (selected && this._poiCategories.size && this._poiSourceVehicleId === selected.deviceId
+        && Number.isFinite(this._poiSourceLat) && Number.isFinite(this._poiSourceLon)
+        && this._distanceKm(this._poiSourceLat, this._poiSourceLon, selected.lat, selected.lon) >= 0.5) {
+      this._schedulePoiLoad(1500, false);
+    }
     this._renderMap();
     this._renderVehiclePanel();
+    this._renderPoiPanel();
     const popup = this.shadowRoot.getElementById("popup");
     if (popup && !popup.classList.contains("hidden") && this._selectedVehicleId) {
       this._showPopup(this._selectedVehicleId, false);
+    }
+    const poiPopup = this.shadowRoot.getElementById("poi-popup");
+    if (poiPopup && !poiPopup.classList.contains("hidden") && this._selectedPoiId) {
+      this._showPoiPopup(this._selectedPoiId, false);
     }
   }
 
@@ -1483,6 +1881,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-mode]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.mode === this._mode);
     });
+    this.shadowRoot.getElementById("poi-toggle")?.classList.toggle("active", this._poiCategories.size > 0);
     this._updateFullscreenIcon();
   }
 
@@ -1510,12 +1909,15 @@ class CardataAnalyticsMapCard extends HTMLElement {
       this._savePreferences();
       this._renderVehiclePanel();
       this._renderMap(true);
+      this._renderPoiPanel();
+      if (this._poiCategories.size) this._schedulePoiLoad(500, false);
     });
     panel.querySelector("#hide-all")?.addEventListener("click", () => {
       for (const v of vehicles) this._hiddenVehicles.add(v.deviceId);
       this._savePreferences();
       this._renderVehiclePanel();
       this._renderMap(true);
+      this._renderPoiPanel();
     });
     panel.querySelectorAll("[data-vehicle-check]").forEach((input) => {
       input.addEventListener("change", () => {
@@ -1527,6 +1929,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
         }
         this._savePreferences();
         this._renderMap(true);
+        this._renderPoiPanel();
+        if (this._poiCategories.size) this._schedulePoiLoad(500, false);
       });
     });
     panel.querySelectorAll("[data-focus]").forEach((btn) => {
@@ -1542,10 +1946,239 @@ class CardataAnalyticsMapCard extends HTMLElement {
         this._savePreferences();
         this._updateControls();
         this._renderVehiclePanel();
+        this._renderPoiPanel();
+        this.shadowRoot?.getElementById("poi-popup")?.classList.add("hidden");
         this._showPopup(id);
         this._renderMap(true);
+        if (this._poiCategories.size) this._schedulePoiLoad(500, false);
       });
     });
+  }
+
+  _renderPoiPanel() {
+    const panel = this.shadowRoot?.getElementById("poi-panel");
+    if (!panel) return;
+    const defs = this._poiDefinitions();
+    const vehicle = this._selectedVehicle() || this._visibleVehicles()[0] || null;
+    const count = this._poiResults.filter((poi) => this._poiCategories.has(poi.category)).length;
+    const selected = [...this._poiCategories];
+    const status = this._poiLoading
+      ? "POIs werden geladen …"
+      : this._poiError
+        ? this._poiError
+        : selected.length
+          ? `${count} POI${count === 1 ? "" : "s"} geladen`
+          : "POI-Suche ist ausgeschaltet.";
+
+    panel.innerHTML = `
+      <div class="panel-title"><span>Points of Interest</span><button id="poi-panel-close" aria-label="Schließen"><ha-icon icon="mdi:close"></ha-icon></button></div>
+      <div class="poi-center"><ha-icon icon="mdi:car-electric"></ha-icon><span>${vehicle ? `Um ${this._esc(vehicle.name)}` : "Kein Fahrzeug mit GPS verfügbar"}</span></div>
+      <div class="poi-categories">
+        ${Object.entries(defs).map(([key, def]) => `
+          <label class="poi-category">
+            <input type="checkbox" data-poi-category="${this._esc(key)}" ${this._poiCategories.has(key) ? "checked" : ""}>
+            <ha-icon icon="${this._esc(def.icon)}"></ha-icon>
+            <span>${this._esc(def.label)}</span>
+          </label>`).join("")}
+      </div>
+      <label class="poi-radius-label">Umkreis
+        <select id="poi-radius">
+          ${[2, 5, 10, 25].map((km) => `<option value="${km}" ${this._poiRadiusKm === km ? "selected" : ""}>${km} km</option>`).join("")}
+        </select>
+      </label>
+      <div class="poi-actions">
+        <button id="poi-refresh" ${!selected.length || !vehicle || this._poiLoading ? "disabled" : ""}><ha-icon icon="mdi:refresh"></ha-icon> Aktualisieren</button>
+        <button id="poi-clear" ${!selected.length && !count ? "disabled" : ""}><ha-icon icon="mdi:map-marker-off-outline"></ha-icon> Aus</button>
+      </div>
+      <div class="poi-status ${this._poiError ? "warning" : ""}">${this._esc(status)}</div>
+      <div class="poi-note">POI-Daten © OpenStreetMap-Mitwirkende · Abfrage über Overpass API · Ergebnisse werden lokal zwischengespeichert.</div>`;
+
+    panel.querySelector("#poi-panel-close")?.addEventListener("click", () => panel.classList.add("hidden"));
+    panel.querySelectorAll("[data-poi-category]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const key = input.dataset.poiCategory;
+        if (input.checked) this._poiCategories.add(key);
+        else this._poiCategories.delete(key);
+        this._savePreferences();
+        this._selectedPoiId = null;
+        this.shadowRoot?.getElementById("poi-popup")?.classList.add("hidden");
+        if (!this._poiCategories.size) {
+          this._poiRequestToken += 1;
+          this._poiResults = [];
+          this._poiSourceVehicleId = null;
+          this._poiSourceLat = null;
+          this._poiSourceLon = null;
+          this._poiError = "";
+          this._poiLoading = false;
+          this._renderMap(false);
+          this._renderPoiPanel();
+          this._updateControls();
+          return;
+        }
+        this._poiLoading = true;
+        this._poiError = "";
+        this._renderPoiPanel();
+        this._updateControls();
+        this._schedulePoiLoad(800, false);
+      });
+    });
+    panel.querySelector("#poi-radius")?.addEventListener("change", (ev) => {
+      this._poiRadiusKm = Number(ev.target.value) || 5;
+      this._savePreferences();
+      if (this._poiCategories.size) {
+        this._poiLoading = true;
+        this._poiError = "";
+        this._renderPoiPanel();
+        this._schedulePoiLoad(500, false);
+      }
+    });
+    panel.querySelector("#poi-refresh")?.addEventListener("click", () => this._schedulePoiLoad(0, true));
+    panel.querySelector("#poi-clear")?.addEventListener("click", () => {
+      this._poiRequestToken += 1;
+      this._poiCategories.clear();
+      this._poiResults = [];
+      this._poiSourceVehicleId = null;
+      this._poiSourceLat = null;
+      this._poiSourceLon = null;
+      this._poiError = "";
+      this._poiLoading = false;
+      this._selectedPoiId = null;
+      this._savePreferences();
+      this.shadowRoot?.getElementById("poi-popup")?.classList.add("hidden");
+      this._renderPoiPanel();
+      this._renderMap(false);
+      this._updateControls();
+    });
+  }
+
+  _renderPoiMarkers(topLeft, width, height, n) {
+    const layer = this.shadowRoot?.getElementById("poi-markers");
+    if (!layer) return;
+    const vehicle = this._selectedVehicle() || this._visibleVehicles()[0] || null;
+    if (!this._poiCategories.size || !vehicle || this._poiSourceVehicleId !== vehicle.deviceId) {
+      layer.replaceChildren();
+      return;
+    }
+
+    const defs = this._poiDefinitions();
+    const worldSize = this._tileSize * n;
+    const points = [];
+    for (const poi of this._poiResults) {
+      if (!this._poiCategories.has(poi.category)) continue;
+      const p = this._latLonToWorld(poi.lat, poi.lon, this._zoom);
+      let x = p.x - topLeft.x;
+      if (x < -worldSize / 2) x += worldSize;
+      if (x > worldSize / 2) x -= worldSize;
+      const y = p.y - topLeft.y;
+      if (x < -60 || x > width + 60 || y < -60 || y > height + 60) continue;
+      points.push({ poi, x, y });
+    }
+
+    const gridSize = this._zoom >= 18 ? 34 : this._zoom >= 16 ? 46 : 58;
+    const buckets = new Map();
+    for (const point of points) {
+      const key = `${Math.floor(point.x / gridSize)}:${Math.floor(point.y / gridSize)}`;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(point);
+    }
+
+    const frag = document.createDocumentFragment();
+    for (const group of buckets.values()) {
+      if (group.length > 1) {
+        const avgX = group.reduce((sum, item) => sum + item.x, 0) / group.length;
+        const avgY = group.reduce((sum, item) => sum + item.y, 0) / group.length;
+        const avgLat = group.reduce((sum, item) => sum + item.poi.lat, 0) / group.length;
+        const avgLon = group.reduce((sum, item) => sum + item.poi.lon, 0) / group.length;
+        const btn = document.createElement("button");
+        btn.className = "poi-cluster";
+        btn.style.transform = `translate(${Math.round(avgX)}px, ${Math.round(avgY)}px) translate(-50%, -50%)`;
+        btn.title = `${group.length} POIs`;
+        btn.textContent = String(group.length);
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          this._center = { lat: avgLat, lon: avgLon };
+          this._zoom = Math.min(this._tileProvider().maxZoom, this._zoom + 2);
+          if (this._mode === "gps") this._mode = this._lastFreeMode;
+          this._savePreferences();
+          this._updateControls();
+          this._renderMap(true);
+        });
+        frag.appendChild(btn);
+        continue;
+      }
+
+      const { poi, x, y } = group[0];
+      const def = defs[poi.category] || { icon: "mdi:map-marker" };
+      const btn = document.createElement("button");
+      btn.className = `poi-marker${poi.id === this._selectedPoiId ? " selected" : ""}`;
+      btn.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -50%)`;
+      btn.dataset.poiId = poi.id;
+      btn.title = poi.name;
+      btn.innerHTML = `<span class="poi-marker-core"><ha-icon icon="${this._esc(def.icon)}"></ha-icon></span>`;
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        this._selectedPoiId = poi.id;
+        this._showPoiPopup(poi.id);
+        this._renderMap(false);
+      });
+      frag.appendChild(btn);
+    }
+    layer.replaceChildren(frag);
+  }
+
+  _showPoiPopup(poiId, reposition = true) {
+    const popup = this.shadowRoot?.getElementById("poi-popup");
+    const poi = this._poiResults.find((item) => item.id === poiId);
+    if (!popup || !poi) return;
+    this._selectedPoiId = poi.id;
+    const defs = this._poiDefinitions();
+    const def = defs[poi.category] || { label: "POI", icon: "mdi:map-marker" };
+    const vehicle = this._selectedVehicle() || this._visibleVehicles()[0] || null;
+    const distance = vehicle ? this._distanceKm(vehicle.lat, vehicle.lon, poi.lat, poi.lon) : null;
+    const detailParts = [poi.operator, poi.brand, poi.openingHours ? `Öffnung: ${poi.openingHours}` : null, poi.capacity ? `Kapazität: ${poi.capacity}` : null]
+      .filter(Boolean);
+    const osmUrl = poi.osmType && poi.osmId
+      ? `https://www.openstreetmap.org/${encodeURIComponent(poi.osmType)}/${encodeURIComponent(poi.osmId)}`
+      : null;
+    popup.innerHTML = `
+      <div class="popup-head"><div><strong><ha-icon icon="${this._esc(def.icon)}"></ha-icon>${this._esc(poi.name)}</strong><div>${this._esc(poi.address || `${poi.lat.toFixed(6)}, ${poi.lon.toFixed(6)}`)}</div></div><button id="poi-popup-close" aria-label="Schließen"><ha-icon icon="mdi:close"></ha-icon></button></div>
+      <div class="poi-popup-meta"><span>${this._esc(def.label)}</span>${distance != null ? `<span>${this._formatNumber(distance, 1)} km vom Fahrzeug</span>` : ""}</div>
+      ${detailParts.length ? `<div class="poi-details">${this._esc(detailParts.join(" · "))}</div>` : ""}
+      <div class="popup-actions poi-popup-actions">
+        <a href="${this._esc(this._poiNavigationUrl(poi))}" target="_blank" rel="noopener"><ha-icon icon="mdi:navigation-variant"></ha-icon> Navigation</a>
+        <a href="${this._esc(this._poiSearchUrl(poi))}" target="_blank" rel="noopener"><ha-icon icon="mdi:google-maps"></ha-icon> Google Maps</a>
+        ${osmUrl ? `<a href="${this._esc(osmUrl)}" target="_blank" rel="noopener"><ha-icon icon="mdi:openstreetmap"></ha-icon> OSM</a>` : ""}
+      </div>`;
+    popup.classList.remove("hidden");
+    this.shadowRoot?.getElementById("popup")?.classList.add("hidden");
+    popup.querySelector("#poi-popup-close")?.addEventListener("click", () => popup.classList.add("hidden"));
+    if (reposition) this._positionPoiPopup();
+  }
+
+  _positionPoiPopup() {
+    const popup = this.shadowRoot?.getElementById("poi-popup");
+    const map = this.shadowRoot?.getElementById("map");
+    if (!popup || !map || popup.classList.contains("hidden")) return;
+    const poi = this._poiResults.find((item) => item.id === this._selectedPoiId);
+    if (!poi) {
+      popup.classList.add("hidden");
+      return;
+    }
+    const rect = map.getBoundingClientRect();
+    const centerWorld = this._latLonToWorld(this._center.lat, this._center.lon, this._zoom);
+    const topLeft = { x: centerWorld.x - rect.width / 2, y: centerWorld.y - rect.height / 2 };
+    const p = this._latLonToWorld(poi.lat, poi.lon, this._zoom);
+    let x = p.x - topLeft.x;
+    const worldSize = this._tileSize * (2 ** this._zoom);
+    if (x < -worldSize / 2) x += worldSize;
+    if (x > worldSize / 2) x -= worldSize;
+    const y = p.y - topLeft.y;
+    const popupWidth = Math.min(350, Math.max(270, rect.width - 24));
+    popup.style.width = `${popupWidth}px`;
+    const left = Math.max(12, Math.min(rect.width - popupWidth - 12, x - popupWidth / 2));
+    const top = y > rect.height * 0.58 ? Math.max(12, y - 215) : Math.min(rect.height - 205, y + 28);
+    popup.style.left = `${Math.round(left)}px`;
+    popup.style.top = `${Math.round(Math.max(12, top))}px`;
   }
 
   _showPopup(vehicleId, reposition = true) {
@@ -1567,6 +2200,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
         ${v.googleMapsUrl ? `<a href="${this._esc(v.googleMapsUrl)}" target="_blank" rel="noopener"><ha-icon icon="mdi:google-maps"></ha-icon> Google Maps</a>` : ""}
       </div>`;
     popup.classList.remove("hidden");
+    this.shadowRoot?.getElementById("poi-popup")?.classList.add("hidden");
     popup.querySelector("#popup-close")?.addEventListener("click", () => popup.classList.add("hidden"));
     popup.querySelector("#popup-follow")?.addEventListener("click", () => {
       this._mode = "gps";
@@ -1649,15 +2283,22 @@ class CardataAnalyticsMapCard extends HTMLElement {
       .toolbar::-webkit-scrollbar { display:none; }
       .mode-group { display:flex; gap:4px; padding:3px; border-radius:12px; background:var(--secondary-background-color); flex:0 0 auto; }
       .mode-btn { border:none; min-height:34px; padding:0 11px; background:transparent; }
-      .mode-btn.active { background:var(--primary-color); color:var(--text-primary-color, white); box-shadow:0 1px 4px rgba(0,0,0,.18); }
+      .mode-btn.active, .tool-btn.active { background:var(--primary-color); color:var(--text-primary-color, white); box-shadow:0 1px 4px rgba(0,0,0,.18); }
       .mode-btn ha-icon, .tool-btn ha-icon { --mdc-icon-size:18px; }
       .tool-btn { padding:0 10px; white-space:nowrap; }
       .map-wrap { padding:0; }
       .map { height:var(--cardata-map-height, 520px); min-height:330px; position:relative; overflow:hidden; background:#d8dde3; touch-action:none; cursor:grab; user-select:none; outline:none; }
       .map.dragging { cursor:grabbing; }
-      .tiles, .markers { position:absolute; inset:0; overflow:hidden; pointer-events:none; }
+      .tiles, .poi-markers, .markers { position:absolute; inset:0; overflow:hidden; pointer-events:none; }
       .tile { position:absolute; width:256px; height:256px; max-width:none; pointer-events:none; -webkit-user-drag:none; }
+      .poi-markers { z-index:18; overflow:visible; }
       .markers { z-index:20; overflow:visible; }
+      .poi-marker, .poi-cluster { position:absolute; left:0; top:0; border:0; padding:0; pointer-events:auto; cursor:pointer; z-index:1; }
+      .poi-marker { background:transparent; }
+      .poi-marker-core { width:29px; height:29px; border-radius:50%; display:grid; place-items:center; background:var(--accent-color, var(--primary-color)); color:white; border:2px solid white; box-shadow:0 2px 6px rgba(0,0,0,.35); }
+      .poi-marker-core ha-icon { --mdc-icon-size:16px; }
+      .poi-marker.selected .poi-marker-core { outline:3px solid color-mix(in srgb, var(--primary-color) 30%, transparent); transform:scale(1.08); }
+      .poi-cluster { min-width:34px; height:34px; border-radius:18px; padding:0 8px; background:var(--primary-color); color:var(--text-primary-color, white); border:2px solid white; box-shadow:0 2px 7px rgba(0,0,0,.35); font-weight:800; }
       .vehicle-marker { position:absolute; left:0; top:0; border:0; background:transparent; padding:0; pointer-events:auto; cursor:pointer; color:var(--primary-text-color); z-index:2; }
       .marker-core { position:relative; display:grid; place-items:center; width:34px; height:34px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); background:var(--primary-color); color:white; border:2px solid white; box-shadow:0 2px 7px rgba(0,0,0,.35); }
       .marker-core ha-icon { transform:rotate(45deg); --mdc-icon-size:19px; }
@@ -1671,10 +2312,25 @@ class CardataAnalyticsMapCard extends HTMLElement {
       .zoom-controls ha-icon { --mdc-icon-size:20px; }
       .attribution { position:absolute; z-index:30; right:4px; bottom:3px; max-width:80%; padding:2px 5px; background:rgba(255,255,255,.78); color:#333; border-radius:4px; font-size:9px; line-height:1.25; }
       .attribution a { color:#245; text-decoration:none; }
-      .vehicle-panel { position:absolute; z-index:60; right:10px; top:10px; width:min(330px,calc(100% - 20px)); max-height:calc(100% - 20px); overflow:auto; border-radius:13px; background:color-mix(in srgb, var(--card-background-color) 96%, transparent); box-shadow:0 5px 22px rgba(0,0,0,.27); border:1px solid var(--divider-color); padding:10px; user-select:text; }
-      .vehicle-panel.hidden, .popup.hidden { display:none; }
+      .vehicle-panel, .poi-panel { position:absolute; z-index:60; right:10px; top:10px; width:min(340px,calc(100% - 20px)); max-height:calc(100% - 20px); overflow:auto; box-sizing:border-box; border-radius:13px; background:color-mix(in srgb, var(--card-background-color) 96%, transparent); box-shadow:0 5px 22px rgba(0,0,0,.27); border:1px solid var(--divider-color); padding:10px; user-select:text; }
+      .vehicle-panel.hidden, .poi-panel.hidden, .popup.hidden, .poi-popup.hidden { display:none; }
       .panel-title { display:flex; justify-content:space-between; align-items:center; font-weight:700; margin-bottom:8px; }
       .panel-title button, .popup-head button { width:32px; min-height:32px; padding:0; border:none; background:transparent; }
+      .poi-center { display:flex; gap:7px; align-items:center; padding:7px 8px; border-radius:9px; background:var(--secondary-background-color); font-size:12px; margin-bottom:8px; }
+      .poi-center ha-icon { --mdc-icon-size:17px; color:var(--primary-color); }
+      .poi-categories { display:grid; grid-template-columns:1fr 1fr; gap:5px; }
+      .poi-category { display:flex; flex-direction:row; align-items:center; gap:6px; padding:7px; border-radius:9px; background:var(--secondary-background-color); color:var(--primary-text-color); font-size:11px; font-weight:600; cursor:pointer; }
+      .poi-category input { width:17px; height:17px; margin:0; flex:0 0 auto; }
+      .poi-category ha-icon { --mdc-icon-size:16px; color:var(--primary-color); }
+      .poi-radius-label { margin-top:9px; display:flex; flex-direction:row; align-items:center; justify-content:space-between; gap:8px; color:var(--secondary-text-color); font-size:11px; font-weight:700; }
+      .poi-radius-label select { width:110px; min-height:34px; border:1px solid var(--divider-color); border-radius:9px; background:var(--card-background-color); color:var(--primary-text-color); padding:4px 8px; }
+      .poi-actions { display:flex; gap:6px; margin-top:9px; }
+      .poi-actions button { flex:1; min-height:34px; border:1px solid var(--divider-color); border-radius:9px; background:color-mix(in srgb, var(--card-background-color) 92%, var(--primary-color) 8%); color:var(--primary-text-color); display:inline-flex; align-items:center; justify-content:center; gap:5px; cursor:pointer; }
+      .poi-actions button:disabled { opacity:.45; cursor:default; }
+      .poi-actions ha-icon { --mdc-icon-size:16px; }
+      .poi-status { margin-top:8px; padding:7px 8px; border-radius:8px; background:var(--secondary-background-color); font-size:11px; line-height:1.35; }
+      .poi-status.warning { background:color-mix(in srgb, var(--warning-color, #f9a825) 14%, transparent); }
+      .poi-note { margin-top:7px; color:var(--secondary-text-color); font-size:9px; line-height:1.35; }
       .panel-actions { display:flex; gap:6px; margin-bottom:8px; }
       .panel-actions button { min-height:30px; padding:0 8px; font-size:11px; }
       .vehicle-list { display:flex; flex-direction:column; gap:5px; }
@@ -1688,9 +2344,10 @@ class CardataAnalyticsMapCard extends HTMLElement {
       .focus-btn { width:32px; min-height:32px; padding:0; }
       .focus-btn ha-icon { --mdc-icon-size:17px; }
       .panel-empty { padding:12px; color:var(--secondary-text-color); font-size:12px; text-align:center; }
-      .popup { position:absolute; z-index:55; box-sizing:border-box; border-radius:13px; background:color-mix(in srgb, var(--card-background-color) 97%, transparent); border:1px solid var(--divider-color); box-shadow:0 5px 22px rgba(0,0,0,.28); padding:11px; user-select:text; }
+      .popup, .poi-popup { position:absolute; z-index:55; box-sizing:border-box; border-radius:13px; background:color-mix(in srgb, var(--card-background-color) 97%, transparent); border:1px solid var(--divider-color); box-shadow:0 5px 22px rgba(0,0,0,.28); padding:11px; user-select:text; }
       .popup-head { display:flex; justify-content:space-between; gap:8px; font-size:12px; line-height:1.35; }
-      .popup-head strong { font-size:14px; display:block; margin-bottom:2px; }
+      .popup-head strong { font-size:14px; display:flex; align-items:center; gap:5px; margin-bottom:2px; }
+      .popup-head strong ha-icon { --mdc-icon-size:17px; color:var(--primary-color); }
       .popup-head > div > div { color:var(--secondary-text-color); }
       .popup-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:9px; }
       .popup-grid > div { display:flex; flex-direction:column; padding:6px 8px; background:var(--secondary-background-color); border-radius:8px; }
@@ -1699,6 +2356,11 @@ class CardataAnalyticsMapCard extends HTMLElement {
       .popup-actions { display:flex; gap:6px; margin-top:9px; }
       .popup-actions button, .popup-actions a { min-height:34px; padding:0 9px; font-size:11px; flex:1; }
       .popup-actions ha-icon { --mdc-icon-size:17px; }
+      .poi-popup-meta { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+      .poi-popup-meta span { padding:4px 7px; border-radius:8px; background:var(--secondary-background-color); font-size:10px; }
+      .poi-details { margin-top:7px; color:var(--secondary-text-color); font-size:10px; line-height:1.4; }
+      .poi-popup-actions { flex-wrap:wrap; }
+      .poi-popup-actions a { min-width:90px; }
       .map-empty { display:none; position:absolute; z-index:35; left:50%; top:50%; transform:translate(-50%,-50%); width:min(420px,calc(100% - 36px)); box-sizing:border-box; padding:14px 16px; border-radius:12px; background:color-mix(in srgb, var(--card-background-color) 94%, transparent); box-shadow:0 2px 12px rgba(0,0,0,.2); text-align:center; font-size:12px; color:var(--secondary-text-color); }
       .map-empty.show { display:block; }
       :host(.pseudo-fullscreen) { position:fixed !important; inset:0 !important; z-index:99999 !important; width:100vw !important; height:100dvh !important; background:var(--card-background-color); }
@@ -1715,7 +2377,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
         .mode-btn { padding:0 9px; }
         .map-header { padding:10px 10px 7px; }
         .toolbar { padding:0 8px 8px; }
-        .popup { left:10px !important; right:10px; width:auto !important; }
+        .popup, .poi-popup { left:10px !important; right:10px; width:auto !important; }
+        .poi-categories { grid-template-columns:1fr; }
       }
     `;
   }

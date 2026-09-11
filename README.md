@@ -82,7 +82,7 @@ The address is resolved with the public **OpenStreetMap Nominatim** reverse-geoc
 
 To use the public service responsibly, Cardata Analytics caches successful results, only performs a new lookup after the vehicle has moved at least approximately **100 metres**, limits each vehicle to at most one lookup every **5 minutes**, and serializes requests from all configured vehicles with a global interval above one second. A temporary geocoder or vehicle-cloud outage does not delete the last successfully resolved address.
 
-The Current Address sensor exposes additional attributes including structured address details, the last geocoded coordinates and timestamp, and a **Google Maps URL** built directly from the coordinates. Opening this URL does not require a Google Maps API key. The Google Maps link is intended for use in automations and a future dashboard-card location view.
+The Current Address sensor exposes additional attributes including structured address details, the last geocoded coordinates and timestamp, and a **Google Maps URL** built directly from the coordinates. Opening this URL does not require a Google Maps API key. The Google Maps link is used by the dashboard cards and can also be used in automations.
 
 Example attribute:
 
@@ -164,10 +164,12 @@ The analytics card automatically expands when additional vehicles are added and 
 - Today / week / month / year statistics
 - Custom comparison-period values
 - Shared date and preset controls
+- Current vehicle address when GPS is configured
+- **Google Maps** button next to the current address
 
 ### Vehicle map card
 
-Version 0.1.19 adds a separate interactive vehicle map:
+Version 0.1.20 expands the separate interactive vehicle map:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -179,7 +181,8 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 
 - OpenStreetMap street-map mode
 - OpenTopoMap topographic mode
-- GPS follow mode, which continuously recenters the map on the selected vehicle while using the OSM map underneath
+- **Satellite** mode using Esri World Imagery by default
+- GPS follow mode, which continuously recenters the map on the selected vehicle
 - Plus/minus zoom controls and mouse/touch panning
 - Fullscreen button with a CSS fullscreen fallback for clients where the browser Fullscreen API is unavailable
 - Show/hide controls for every configured vehicle
@@ -188,13 +191,65 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 - Clickable vehicle markers with address, SoC, remaining range, odometer and GPS-age information
 - **Follow** action for an individual vehicle
 - **Google Maps** link from the vehicle popup
-- Remembered map mode, zoom, center, selected vehicle and visibility choices in browser-local storage
+- Browser-local persistence for map mode, zoom, center, selected vehicle, vehicle visibility and POI preferences
 
 `height` is optional and is specified in pixels. The default is `520`.
 
-The OSM and Topo layers load public map tiles directly in the browser and therefore contact the corresponding public tile service for the currently visible map area. The required map attribution is shown directly on the card.
+#### Satellite layer
 
-Points of interest, nearby charging stations and workshops are intentionally not included in 0.1.19. They are planned as a separate map expansion so POI querying, caching and provider usage limits can be handled independently from the stable vehicle-position view.
+The built-in Satellite mode uses the public Esri World Imagery raster-tile endpoint and displays the corresponding attribution directly on the map. No Google Maps API key is used for the satellite layer. Map providers can change availability or terms independently of Cardata Analytics.
+
+An advanced installation may override the satellite tile source in the card configuration:
+
+```yaml
+type: custom:cardata-analytics-map-card
+satellite_url: https://example.invalid/tiles/{z}/{x}/{y}.jpg
+satellite_attribution: My imagery provider
+satellite_max_zoom: 19
+```
+
+When a custom satellite source is configured, the user is responsible for that provider's access requirements, attribution and usage terms.
+
+#### Nearby POIs
+
+POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km and 25 km**.
+
+Available filters in 0.1.20:
+
+- EV charging stations
+- Vehicle workshops / car repair
+- Restaurants
+- Cafés
+- Parking
+- Supermarkets
+- Hotels
+- Pharmacies
+- Public toilets
+
+POIs are queried from OpenStreetMap through the public Overpass API only after POI filters are enabled. Cardata Analytics combines selected filters into one request, debounces filter changes, enforces a minimum delay between network requests, backs off after rate-limit responses, limits displayed results, and caches successful query results in browser-local storage for 15 minutes. This is designed for occasional personal dashboard use rather than continuous or high-volume POI harvesting.
+
+For installations that prefer another Overpass provider or a self-hosted endpoint, the map card also accepts optional advanced settings:
+
+```yaml
+type: custom:cardata-analytics-map-card
+overpass_url: https://overpass-api.de/api/interpreter
+poi_cache_minutes: 15
+poi_max_results: 500
+```
+
+`overpass_url` must use HTTPS. `poi_cache_minutes` is clamped to 5–120 minutes and `poi_max_results` to 50–1000.
+
+Nearby POIs are clustered automatically when several markers overlap at the current zoom level. Clicking a cluster zooms further in. Clicking an individual POI shows its category, available OSM address/details and straight-line distance from the selected vehicle.
+
+Every POI popup offers:
+
+- **Navigation** — opens a Google Maps directions URL with the exact POI coordinates as the destination
+- **Google Maps** — opens the exact POI location
+- **OSM** — opens the original OpenStreetMap object when its OSM type/id is available
+
+Google Maps URLs do not require a Google API key. On iOS/Android, the universal Google Maps link can open the installed Google Maps app; otherwise it opens in a browser.
+
+The OSM, Topo and POI features contact public OpenStreetMap-related services from the browser. The required attribution is shown in the map or POI panel. Public services are best-effort and may rate-limit requests.
 
 The cards are registered as a Lovelace module resource automatically when Home Assistant uses storage mode.
 
