@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.20";
+const CARD_VERSION = "0.1.21";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -942,6 +942,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
     this._selectedPoiId = null;
     this._poiCacheTtlMs = 15 * 60 * 1000;
     this._poiMaxResults = 500;
+    this._poiRequestTimeoutMs = 35000;
+    this._poiLastEndpoint = "";
     this.attachShadow({ mode: "open" });
   }
 
@@ -965,6 +967,9 @@ class CardataAnalyticsMapCard extends HTMLElement {
     }
     if (Number.isFinite(Number(config?.poi_max_results))) {
       this._poiMaxResults = Math.max(50, Math.min(1000, Math.round(Number(config.poi_max_results))));
+    }
+    if (Number.isFinite(Number(config?.poi_request_timeout_seconds))) {
+      this._poiRequestTimeoutMs = Math.max(15, Math.min(90, Number(config.poi_request_timeout_seconds))) * 1000;
     }
     this._restorePreferences();
   }
@@ -1256,12 +1261,12 @@ class CardataAnalyticsMapCard extends HTMLElement {
       pharmacy: {
         label: "Apotheken",
         icon: "mdi:pharmacy",
-        clauses: ['["amenity"="pharmacy"]'],
+        clauses: ['["amenity"="pharmacy"]', '["healthcare"="pharmacy"]'],
       },
       hospital: {
         label: "Krankenhäuser",
         icon: "mdi:hospital-building",
-        clauses: ['["amenity"="hospital"]'],
+        clauses: ['["amenity"="hospital"]', '["healthcare"="hospital"]'],
       },
       toilets: {
         label: "Toiletten",
@@ -1279,8 +1284,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
     if (tags.amenity === "parking") return "parking";
     if (tags.shop === "supermarket") return "supermarket";
     if (tags.tourism === "hotel") return "hotel";
-    if (tags.amenity === "pharmacy") return "pharmacy";
-    if (tags.amenity === "hospital") return "hospital";
+    if (tags.amenity === "pharmacy" || tags.healthcare === "pharmacy") return "pharmacy";
+    if (tags.amenity === "hospital" || tags.healthcare === "hospital") return "hospital";
     if (tags.amenity === "toilets") return "toilets";
     return null;
   }
@@ -1358,7 +1363,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
   }
 
   _poiCacheStorageKey() {
-    return `${this._storageKey}:poi-cache-v1`;
+    return `${this._storageKey}:poi-cache-v2`;
   }
 
   _readPoiCache() {
@@ -1407,7 +1412,73 @@ class CardataAnalyticsMapCard extends HTMLElement {
       if (!def) continue;
       for (const filter of def.clauses) clauses.push(`nwr${filter}${around};`);
     }
-    return `[out:json][timeout:20];(${clauses.join("")});out tags center qt ${this._poiMaxResults};`;
+    const queryTimeout = Math.max(10, Math.floor(this._poiRequestTimeoutMs / 1000) - 5);
+    return `[out:json][timeout:${queryTimeout}];(${clauses.join("")});out tags center qt ${this._poiMaxResults};`;
+  }
+
+  _overpassEndpoints() {
+    const configuredEndpoint = typeof this._config.overpass_url === "string" ? this._config.overpass_url.trim() : "";
+    if (configuredEndpoint) return [configuredEndpoint];
+    return [
+      "https://overpass-api.de/api/interpreter",
+      "https://overpass.private.coffee/api/interpreter",
+    ];
+  }
+
+  _overpassEndpointLabel(endpoint) {
+    try {
+      return new URL(endpoint).hostname;
+    } catch (_) {
+      return endpoint;
+    }
+  }
+
+  async _fetchOverpass(query) {
+    const endpoints = this._overpassEndpoints();
+    const failures = [];
+    for (const endpoint of endpoints) {
+      if (!/^https:\/\//i.test(endpoint)) {
+        failures.push(`${endpoint}: HTTPS erforderlich`);
+        continue;
+      }
+
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const timeoutId = controller
+        ? setTimeout(() => controller.abort(), this._poiRequestTimeoutMs)
+        : null;
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+          body: `data=${encodeURIComponent(query)}`,
+          signal: controller?.signal,
+          cache: "no-store",
+          credentials: "omit",
+        });
+        if (!response.ok) {
+          const error = new Error(`HTTP ${response.status}`);
+          error.status = response.status;
+          if (response.status === 400) throw error;
+          failures.push(`${this._overpassEndpointLabel(endpoint)}: HTTP ${response.status}`);
+          if (response.status === 429 || response.status === 406) {
+            this._poiBackoffUntil = Math.max(this._poiBackoffUntil, Date.now() + 30000);
+          }
+          continue;
+        }
+        const payload = await response.json();
+        this._poiLastEndpoint = endpoint;
+        return payload;
+      } catch (err) {
+        if (err?.status === 400) throw new Error(`Overpass-Abfrage ungültig (${err.message})`);
+        const reason = err?.name === "AbortError"
+          ? `Timeout nach ${Math.round(this._poiRequestTimeoutMs / 1000)} s`
+          : (err?.message || String(err));
+        failures.push(`${this._overpassEndpointLabel(endpoint)}: ${reason}`);
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
+    }
+    throw new Error(failures.length ? failures.join(" · ") : "Kein Overpass-Endpunkt verfügbar");
   }
 
   async _loadPois(force = false) {
@@ -1467,21 +1538,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
 
     try {
       const query = this._buildOverpassQuery(vehicle);
-      const configuredEndpoint = typeof this._config.overpass_url === "string" ? this._config.overpass_url.trim() : "";
-      const endpoint = configuredEndpoint || "https://overpass-api.de/api/interpreter";
-      if (!/^https:\/\//i.test(endpoint)) throw new Error("Overpass endpoint must use HTTPS");
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-        body: `data=${encodeURIComponent(query)}`,
-      });
-      if (!response.ok) {
-        if (response.status === 429 || response.status === 406) {
-          this._poiBackoffUntil = Date.now() + 30000;
-        }
-        throw new Error(`Overpass HTTP ${response.status}`);
-      }
-      const payload = await response.json();
+      const payload = await this._fetchOverpass(query);
       if (token !== this._poiRequestToken) return;
       const seen = new Set();
       const results = [];
@@ -1553,7 +1610,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
         const validPoiKeys = new Set(Object.keys(this._poiDefinitions()));
         this._poiCategories = new Set(data.poiCategories.map(String).filter((key) => validPoiKeys.has(key)));
       }
-      if ([2, 5, 10, 25].includes(Number(data.poiRadiusKm))) this._poiRadiusKm = Number(data.poiRadiusKm);
+      if ([2, 5, 10, 25, 50].includes(Number(data.poiRadiusKm))) this._poiRadiusKm = Number(data.poiRadiusKm);
     } catch (_) { /* ignore invalid browser storage */ }
   }
 
@@ -2082,7 +2139,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
       : this._poiError
         ? this._poiError
         : selected.length
-          ? `${count} POI${count === 1 ? "" : "s"} geladen`
+          ? `${count} POI${count === 1 ? "" : "s"} geladen${this._poiLastEndpoint ? ` · ${this._overpassEndpointLabel(this._poiLastEndpoint)}` : ""}`
           : "POI-Suche ist ausgeschaltet.";
 
     panel.innerHTML = `
@@ -2098,7 +2155,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
       </div>
       <label class="poi-radius-label">Umkreis
         <select id="poi-radius">
-          ${[2, 5, 10, 25].map((km) => `<option value="${km}" ${this._poiRadiusKm === km ? "selected" : ""}>${km} km</option>`).join("")}
+          ${[2, 5, 10, 25, 50].map((km) => `<option value="${km}" ${this._poiRadiusKm === km ? "selected" : ""}>${km} km</option>`).join("")}
         </select>
       </label>
       <div class="poi-actions">

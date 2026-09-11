@@ -1,6 +1,15 @@
 # Changelog
 
 
+## 0.1.21
+
+- Fixed POI loading that could remain stuck indefinitely when an Overpass request stalled by adding a bounded client-side request timeout.
+- Added a conservative automatic fallback from `overpass-api.de` to the public `overpass.private.coffee` instance when no custom `overpass_url` is configured.
+- Added a 50 km POI search radius.
+- Expanded pharmacy matching to include both `amenity=pharmacy` and `healthcare=pharmacy`; hospital matching now also accepts `healthcare=hospital`.
+- Bumped the local POI cache key so older cached results cannot mask the updated POI matching.
+- Kept analytics, daily-ledger, date-range, GPS and vehicle calculations unchanged.
+
 ## 0.1.20
 
 - Added the current vehicle address directly to each vehicle section in `custom:cardata-analytics-card`, including GPS freshness and a Google Maps button; the location row stays hidden when GPS/address data is unavailable.

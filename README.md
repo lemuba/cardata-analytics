@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.20 expands the separate interactive vehicle map:
+Version 0.1.21 expands the separate interactive vehicle map:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -183,7 +183,7 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 
 - OpenStreetMap street-map mode
 - OpenTopoMap topographic mode
-- **Satellite** mode using Esri World Imagery by default
+- **Satellite** mode with an explicitly configured, provider-capable HTTPS tile source
 - GPS follow mode, which continuously recenters the map on the selected vehicle
 - Plus/minus zoom controls and mouse/touch panning
 - Fullscreen button with a CSS fullscreen fallback for clients where the browser Fullscreen API is unavailable
@@ -199,7 +199,7 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 
 #### Satellite layer
 
-The card includes a **Satellite** mode, but version 0.1.20 deliberately does **not** hard-code a third-party commercial satellite tile endpoint without credentials. Current mainstream high-resolution imagery services generally require an account/token and provider-specific attribution/usage terms; using undocumented Google tiles or assuming that a legacy unauthenticated endpoint is permanently permitted would not be a clean default.
+The card includes a **Satellite** mode, but version 0.1.21 deliberately does **not** hard-code a third-party commercial satellite tile endpoint without credentials. Current mainstream high-resolution imagery services generally require an account/token and provider-specific attribution/usage terms; using undocumented Google tiles or assuming that a legacy unauthenticated endpoint is permanently permitted would not be a clean default.
 
 Instead, the satellite layer is provider-capable and is configured explicitly in the Lovelace card:
 
@@ -214,9 +214,9 @@ satellite_max_zoom: 19
 
 #### Nearby POIs
 
-POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km and 25 km**.
+POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km, 25 km and 50 km**.
 
-Available filters in 0.1.20:
+Available filters in 0.1.21:
 
 - EV charging stations
 - Vehicle workshops / car repair
@@ -238,9 +238,10 @@ type: custom:cardata-analytics-map-card
 overpass_url: https://overpass-api.de/api/interpreter
 poi_cache_minutes: 15
 poi_max_results: 500
+poi_request_timeout_seconds: 35
 ```
 
-`overpass_url` must use HTTPS. `poi_cache_minutes` is clamped to 5–120 minutes and `poi_max_results` to 50–1000.
+`overpass_url` must use HTTPS. When `overpass_url` is omitted, the card first tries `overpass-api.de` and then `overpass.private.coffee` if the first request fails or times out. `poi_cache_minutes` is clamped to 5–120 minutes, `poi_max_results` to 50–1000, and `poi_request_timeout_seconds` to 15–90 seconds.
 
 Nearby POIs are clustered automatically when several markers overlap at the current zoom level. Clicking a cluster zooms further in. Clicking an individual POI shows its category, available OSM address/details and straight-line distance from the selected vehicle. When present in OSM, the popup also includes opening hours, operator/brand, phone, website, access/fee information, capacity and charging-connector tags.
 
