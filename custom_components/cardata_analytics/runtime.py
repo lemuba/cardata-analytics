@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import logging
 import math
+from time import monotonic
+from urllib.parse import urlencode
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
@@ -13,6 +16,7 @@ from homeassistant.components.recorder.statistics import statistics_during_perio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.helpers.storage import Store
@@ -21,11 +25,19 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_BATTERY_CAPACITY,
     CONF_ENERGY_ENTITY,
+    CONF_LATITUDE_ENTITY,
+    CONF_LONGITUDE_ENTITY,
     CONF_MILEAGE_ENTITY,
     CONF_RANGE_ENTITY,
     CONF_SOC_ENTITY,
     CONF_SOH_ENTITY,
+    DATA_NOMINATIM_LAST_REQUEST,
+    DATA_NOMINATIM_LOCK,
     DOMAIN,
+    NOMINATIM_MIN_DISTANCE_METERS,
+    NOMINATIM_MIN_REQUEST_INTERVAL,
+    NOMINATIM_MIN_VEHICLE_INTERVAL,
+    NOMINATIM_REVERSE_URL,
     SIGNAL_UPDATE,
 )
 from .controller import GlobalRangeController
@@ -86,6 +98,81 @@ def _energy_kwh_state(hass: HomeAssistant, entity_id: str | None) -> float | Non
     return value
 
 
+def _coordinate_state(
+    hass: HomeAssistant, entity_id: str | None, *, latitude: bool
+) -> float | None:
+    """Return a valid latitude/longitude value from a source sensor."""
+    value = _float_state(hass, entity_id)
+    if value is None or not math.isfinite(value):
+        return None
+    if latitude and not -90.0 <= value <= 90.0:
+        return None
+    if not latitude and not -180.0 <= value <= 180.0:
+        return None
+    return value
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return great-circle distance between two WGS84 coordinates in metres."""
+    radius_m = 6_371_000.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(d_phi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2.0) ** 2
+    )
+    return 2.0 * radius_m * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+
+
+def _format_nominatim_address(payload: dict[str, Any]) -> str | None:
+    """Build a compact Home Assistant state from Nominatim address details."""
+    address = payload.get("address")
+    if not isinstance(address, dict):
+        address = {}
+
+    road = next(
+        (
+            str(address[key]).strip()
+            for key in (
+                "road",
+                "pedestrian",
+                "residential",
+                "footway",
+                "path",
+                "cycleway",
+            )
+            if address.get(key)
+        ),
+        "",
+    )
+    house_number = str(address.get("house_number") or "").strip()
+    street = " ".join(part for part in (road, house_number) if part)
+
+    locality = next(
+        (
+            str(address[key]).strip()
+            for key in ("city", "town", "village", "municipality", "hamlet", "suburb")
+            if address.get(key)
+        ),
+        "",
+    )
+    postcode = str(address.get("postcode") or "").strip()
+    locality_line = " ".join(part for part in (postcode, locality) if part)
+    country = str(address.get("country") or "").strip()
+
+    parts = [part for part in (street, locality_line, country) if part]
+    formatted = ", ".join(parts)
+    if not formatted:
+        formatted = str(payload.get("display_name") or "").strip()
+    if not formatted:
+        return None
+    # Home Assistant states are deliberately short; keep the full Nominatim
+    # display name in attributes instead.
+    return formatted[:255]
+
+
 def _period_id(period: str, now: datetime) -> str:
     if period == "day":
         return now.date().isoformat()
@@ -106,6 +193,9 @@ class VehicleSnapshot:
     range_km: float | None
     source_soh: float | None
     battery_capacity: float | None
+    latitude: float | None
+    longitude: float | None
+    current_address: str | None
     total_kwh: float
     period_kwh: dict[str, float]
     period_km: dict[str, float]
@@ -155,6 +245,7 @@ class VehicleRuntime:
         self._custom_coverage_status = "initializing"
         self._last_valid_mileage: float | None = None
         self._last_valid_mileage_at: datetime | None = None
+        self._location_refresh_task: asyncio.Task | None = None
 
     async def async_setup(self) -> None:
         """Load persistent data and start listeners."""
@@ -276,10 +367,29 @@ class VehicleRuntime:
                     "recovered_from": values.get("recovered_from"),
                 }
 
+        raw_location = stored.get("location", {})
+        location: dict[str, Any] = {}
+        if isinstance(raw_location, dict):
+            location = {
+                "address": raw_location.get("address"),
+                "display_name": raw_location.get("display_name"),
+                "address_details": (
+                    dict(raw_location.get("address_details"))
+                    if isinstance(raw_location.get("address_details"), dict)
+                    else {}
+                ),
+                "geocoded_latitude": raw_location.get("geocoded_latitude"),
+                "geocoded_longitude": raw_location.get("geocoded_longitude"),
+                "last_geocoded_at": raw_location.get("last_geocoded_at"),
+                "last_attempt_at": raw_location.get("last_attempt_at"),
+                "last_error": raw_location.get("last_error"),
+            }
+
         self.data = {
             "total_kwh": float(stored.get("total_kwh", 0.0)),
             "periods": stored.get("periods", {}),
             "daily_history": daily_history,
+            "location": location,
             "daily_history_schema": DAILY_HISTORY_SCHEMA,
             "tracking_started_at": self._tracking_started_at.isoformat(),
             "tracking_start_mileage": tracking_start_mileage,
@@ -341,6 +451,10 @@ class VehicleRuntime:
             tracked.append(self.entry.data[CONF_RANGE_ENTITY])
         if self.entry.data.get(CONF_SOH_ENTITY):
             tracked.append(self.entry.data[CONF_SOH_ENTITY])
+        if self.entry.data.get(CONF_LATITUDE_ENTITY):
+            tracked.append(self.entry.data[CONF_LATITUDE_ENTITY])
+        if self.entry.data.get(CONF_LONGITUDE_ENTITY):
+            tracked.append(self.entry.data[CONF_LONGITUDE_ENTITY])
 
         self._unsubs.append(async_track_state_change_event(self.hass, tracked, self._async_state_changed))
         self._unsubs.append(async_track_time_change(self.hass, self._async_midnight, hour=0, minute=0, second=0))
@@ -348,11 +462,19 @@ class VehicleRuntime:
         # catches up with newly written recorder statistics.
         self._unsubs.append(async_track_time_change(self.hass, self._async_hourly, minute=7, second=0))
 
+        # Reverse geocoding is optional and deliberately performed in a background
+        # task so a temporary network/Nominatim issue can never block vehicle setup.
+        if self.location_configured:
+            self._schedule_location_refresh(delay=0.0)
+
     async def async_unload(self) -> None:
         """Stop listeners."""
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        if self._location_refresh_task is not None and not self._location_refresh_task.done():
+            self._location_refresh_task.cancel()
+        self._location_refresh_task = None
 
     @property
     def current_soc(self) -> float | None:
@@ -475,6 +597,221 @@ class VehicleRuntime:
             return True
 
         return False
+
+    @property
+    def current_latitude(self) -> float | None:
+        return _coordinate_state(
+            self.hass, self.entry.data.get(CONF_LATITUDE_ENTITY), latitude=True
+        )
+
+    @property
+    def current_longitude(self) -> float | None:
+        return _coordinate_state(
+            self.hass, self.entry.data.get(CONF_LONGITUDE_ENTITY), latitude=False
+        )
+
+    @property
+    def location_configured(self) -> bool:
+        return bool(
+            self.entry.data.get(CONF_LATITUDE_ENTITY)
+            and self.entry.data.get(CONF_LONGITUDE_ENTITY)
+        )
+
+    @property
+    def location_source_available(self) -> bool:
+        return self.current_latitude is not None and self.current_longitude is not None
+
+    @property
+    def current_address(self) -> str | None:
+        value = self.data.get("location", {}).get("address")
+        return str(value) if value else None
+
+    @property
+    def google_maps_url(self) -> str | None:
+        lat = self.current_latitude
+        lon = self.current_longitude
+        if lat is None or lon is None:
+            location = self.data.get("location", {})
+            try:
+                lat = float(location.get("geocoded_latitude"))
+                lon = float(location.get("geocoded_longitude"))
+            except (TypeError, ValueError):
+                return None
+        return "https://www.google.com/maps/search/?" + urlencode(
+            {"api": "1", "query": f"{lat:.7f},{lon:.7f}"}
+        )
+
+    @property
+    def using_cached_address(self) -> bool:
+        if not self.current_address:
+            return False
+        lat = self.current_latitude
+        lon = self.current_longitude
+        if lat is None or lon is None:
+            return True
+        location = self.data.get("location", {})
+        try:
+            cached_lat = float(location.get("geocoded_latitude"))
+            cached_lon = float(location.get("geocoded_longitude"))
+        except (TypeError, ValueError):
+            return True
+        return _haversine_m(lat, lon, cached_lat, cached_lon) >= NOMINATIM_MIN_DISTANCE_METERS
+
+    def _schedule_location_refresh(self, *, delay: float = 2.0) -> None:
+        """Debounce paired latitude/longitude updates before reverse geocoding."""
+        if not self.location_configured:
+            return
+        current_task = asyncio.current_task()
+        if (
+            self._location_refresh_task is not None
+            and not self._location_refresh_task.done()
+            and self._location_refresh_task is not current_task
+        ):
+            self._location_refresh_task.cancel()
+        self._location_refresh_task = self.hass.async_create_task(
+            self._async_delayed_location_refresh(delay)
+        )
+
+    async def _async_delayed_location_refresh(self, delay: float) -> None:
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            await self.async_refresh_location()
+        except asyncio.CancelledError:
+            return
+        finally:
+            if asyncio.current_task() is self._location_refresh_task:
+                self._location_refresh_task = None
+
+    async def async_refresh_location(self, *, force: bool = False) -> bool:
+        """Reverse-geocode the current GPS position through public Nominatim.
+
+        Requests are cached by position and rate-limited both per vehicle and
+        globally. A geocoder failure never clears the last successful address.
+        """
+        lat = self.current_latitude
+        lon = self.current_longitude
+        if lat is None or lon is None:
+            return False
+
+        location = self.data.setdefault("location", {})
+        now_utc = dt_util.utcnow()
+
+        cached_lat: float | None
+        cached_lon: float | None
+        try:
+            cached_lat = float(location.get("geocoded_latitude"))
+            cached_lon = float(location.get("geocoded_longitude"))
+        except (TypeError, ValueError):
+            cached_lat = cached_lon = None
+
+        if (
+            not force
+            and self.current_address
+            and cached_lat is not None
+            and cached_lon is not None
+            and _haversine_m(lat, lon, cached_lat, cached_lon) < NOMINATIM_MIN_DISTANCE_METERS
+        ):
+            return False
+
+        last_attempt = location.get("last_attempt_at")
+        parsed_last_attempt = (
+            dt_util.parse_datetime(last_attempt) if isinstance(last_attempt, str) else None
+        )
+        if not force and parsed_last_attempt is not None:
+            elapsed = (
+                now_utc - dt_util.as_utc(parsed_last_attempt)
+            ).total_seconds()
+            if elapsed < NOMINATIM_MIN_VEHICLE_INTERVAL:
+                # If the car just reached its destination inside the cooldown
+                # window there may be no later GPS state update. Schedule one
+                # deferred retry so the address still catches up automatically.
+                self._schedule_location_refresh(
+                    delay=max(1.0, NOMINATIM_MIN_VEHICLE_INTERVAL - elapsed + 0.1)
+                )
+                return False
+
+        domain_data = self.hass.data.setdefault(DOMAIN, {})
+        lock = domain_data.get(DATA_NOMINATIM_LOCK)
+        if lock is None:
+            lock = asyncio.Lock()
+            domain_data[DATA_NOMINATIM_LOCK] = lock
+
+        async with lock:
+            last_request = domain_data.get(DATA_NOMINATIM_LAST_REQUEST)
+            if isinstance(last_request, (int, float)):
+                wait = NOMINATIM_MIN_REQUEST_INTERVAL - (monotonic() - float(last_request))
+                if wait > 0:
+                    await asyncio.sleep(wait)
+
+            params = {
+                "format": "jsonv2",
+                "addressdetails": "1",
+                "zoom": "18",
+                "lat": f"{lat:.7f}",
+                "lon": f"{lon:.7f}",
+            }
+            language = getattr(self.hass.config, "language", None)
+            if language:
+                params["accept-language"] = str(language)
+            headers = {
+                "User-Agent": (
+                    "CardataAnalytics/0.1.18 "
+                    "(+https://github.com/lemuba/cardata-analytics)"
+                )
+            }
+            location["last_attempt_at"] = now_utc.isoformat()
+            domain_data[DATA_NOMINATIM_LAST_REQUEST] = monotonic()
+
+            try:
+                session = async_get_clientsession(self.hass)
+                async with session.get(
+                    NOMINATIM_REVERSE_URL,
+                    params=params,
+                    headers=headers,
+                    timeout=15,
+                ) as response:
+                    if response.status != 200:
+                        raise RuntimeError(f"Nominatim HTTP {response.status}")
+                    payload = await response.json(content_type=None)
+            except Exception as err:
+                location["last_error"] = f"{type(err).__name__}: {err}"[:255]
+                await self.store.async_save(self.data)
+                _LOGGER.debug(
+                    "Reverse geocoding failed for %s at %.6f, %.6f: %s",
+                    self.entry.title,
+                    lat,
+                    lon,
+                    err,
+                )
+                async_dispatcher_send(
+                    self.hass, SIGNAL_UPDATE.format(self.entry.entry_id)
+                )
+                return False
+
+        if not isinstance(payload, dict):
+            return False
+        address = _format_nominatim_address(payload)
+        if not address:
+            return False
+
+        address_details = payload.get("address")
+        location.update(
+            {
+                "address": address,
+                "display_name": str(payload.get("display_name") or address),
+                "address_details": (
+                    dict(address_details) if isinstance(address_details, dict) else {}
+                ),
+                "geocoded_latitude": lat,
+                "geocoded_longitude": lon,
+                "last_geocoded_at": dt_util.utcnow().isoformat(),
+                "last_error": None,
+            }
+        )
+        await self.store.async_save(self.data)
+        async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))
+        return True
 
     @property
     def current_range(self) -> float | None:
@@ -985,6 +1322,9 @@ class VehicleRuntime:
             range_km=self.current_range,
             source_soh=self.current_source_soh,
             battery_capacity=self.battery_capacity,
+            latitude=self.current_latitude,
+            longitude=self.current_longitude,
+            current_address=self.current_address,
             total_kwh=round(float(self.data.get("total_kwh", 0.0)), 4),
             period_kwh=period_kwh,
             period_km=period_km,
@@ -1323,6 +1663,12 @@ class VehicleRuntime:
 
         if changed:
             await self.store.async_save(self.data)
+
+        if entity_id in (
+            self.entry.data.get(CONF_LATITUDE_ENTITY),
+            self.entry.data.get(CONF_LONGITUDE_ENTITY),
+        ):
+            self._schedule_location_refresh()
 
         async_dispatcher_send(self.hass, SIGNAL_UPDATE.format(self.entry.entry_id))
 

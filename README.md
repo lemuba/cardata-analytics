@@ -17,6 +17,8 @@ It tracks distance, estimated energy consumption and average consumption, provid
   - Estimated consumed energy
   - Average consumption in kWh/100 km
   - State of health, if available
+  - GPS latitude/longitude, if available
+  - Current address via OpenStreetMap Nominatim, if GPS is configured
 - Period statistics for:
   - Today
   - Week
@@ -45,6 +47,8 @@ Optional source data:
 
 - Remaining range
 - State of health (SoH)
+- GPS latitude
+- GPS longitude
 
 Distance values are normalized from `km`, `mi` or `m` to kilometres.
 
@@ -63,6 +67,28 @@ For most vehicles, use **BEV** and select the available source sensors manually.
 For a generic BEV, the vehicle name can be chosen freely. You can either select a sensor that represents the vehicle's **total usable battery capacity** or enter a fixed usable capacity in kWh.
 
 > Do not use a sensor that reports the battery's current stored energy as the usable battery capacity source. The integration needs the vehicle's total usable battery capacity for its consumption calculation.
+
+## Optional GPS and current address
+
+A vehicle can optionally be configured with a **latitude** and **longitude** sensor. Both sensors must be configured together. Existing vehicles can add or change these sources through Home Assistant's **Reconfigure** action for the Cardata Analytics config entry.
+
+When both coordinates are available, Cardata Analytics creates three additional vehicle sensors:
+
+- GPS Latitude
+- GPS Longitude
+- Current Address
+
+The address is resolved with the public **OpenStreetMap Nominatim** reverse-geocoding service. No API key is required. GPS coordinates are therefore sent to the public Nominatim service when an address lookup is required. Address data is attributed to **© OpenStreetMap contributors**.
+
+To use the public service responsibly, Cardata Analytics caches successful results, only performs a new lookup after the vehicle has moved at least approximately **100 metres**, limits each vehicle to at most one lookup every **5 minutes**, and serializes requests from all configured vehicles with a global interval above one second. A temporary geocoder or vehicle-cloud outage does not delete the last successfully resolved address.
+
+The Current Address sensor exposes additional attributes including structured address details, the last geocoded coordinates and timestamp, and a **Google Maps URL** built directly from the coordinates. Opening this URL does not require a Google Maps API key. The Google Maps link is intended for use in automations and a future dashboard-card location view.
+
+Example attribute:
+
+```text
+google_maps_url: https://www.google.com/maps/search/?api=1&query=54.0032228%2C9.7693308
+```
 
 ## Consumption calculation
 
@@ -189,9 +215,11 @@ Until Cardata Analytics is available in the default HACS repository list, add it
 
 ## Data and privacy
 
-Cardata Analytics performs its calculations locally in Home Assistant.
+Cardata Analytics performs its vehicle analytics calculations locally in Home Assistant and does not send data to the developer. It does not connect to a vehicle manufacturer directly; it only reads the source entities that already exist in your Home Assistant instance.
 
-It does not send vehicle data to the developer and does not communicate with a vehicle manufacturer or external cloud service on its own. It only reads the source entities that already exist in your Home Assistant instance.
+If optional GPS latitude/longitude sources are configured, the integration sends the current coordinates to the public **OpenStreetMap Nominatim** service only when a reverse-geocoding lookup is required. Successful address results are cached locally in Home Assistant to minimize external requests. If GPS sources are not configured, Cardata Analytics makes no Nominatim requests.
+
+The Google Maps URL is generated locally from the coordinates. Generating the link itself makes no Google request; Google receives the coordinates only when a user opens the link.
 
 ## Limitations
 

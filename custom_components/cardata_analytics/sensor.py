@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Callable
+from typing import Any, Callable
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
@@ -33,7 +33,7 @@ class CardataAnalyticsSensorDescription:
 
     key: str
     name: str
-    value_fn: Callable[[VehicleSnapshot], float | None]
+    value_fn: Callable[[VehicleSnapshot], Any]
     unit: str | None = None
     device_class: SensorDeviceClass | None = None
     state_class: SensorStateClass | None = None
@@ -135,6 +135,30 @@ for _period, _title in (("day", "Heute"), ("week", "Woche"), ("month", "Monat"),
         ]
     )
 
+LOCATION_SENSORS = [
+    CardataAnalyticsSensorDescription(
+        key="latitude",
+        name="GPS Latitude",
+        unit="°",
+        value_fn=lambda s: None if s.latitude is None else round(s.latitude, 7),
+        icon="mdi:latitude",
+    ),
+    CardataAnalyticsSensorDescription(
+        key="longitude",
+        name="GPS Longitude",
+        unit="°",
+        value_fn=lambda s: None if s.longitude is None else round(s.longitude, 7),
+        icon="mdi:longitude",
+    ),
+    CardataAnalyticsSensorDescription(
+        key="current_address",
+        name="Aktuelle Adresse",
+        value_fn=lambda s: s.current_address,
+        icon="mdi:map-marker",
+    ),
+]
+
+
 CUSTOM_SENSORS = [
     CardataAnalyticsSensorDescription(
         key="custom_energy",
@@ -217,6 +241,9 @@ async def async_setup_entry(
             )
         )
 
+    if runtime.location_configured:
+        descriptions.extend(LOCATION_SENSORS)
+
     descriptions.extend(CUSTOM_SENSORS)
 
     # Reconfiguration can remove optional source sensors (range / source SoH).
@@ -225,7 +252,7 @@ async def async_setup_entry(
     # entities behind after the config entry reloads.
     desired_keys = {description.key for description in descriptions}
     registry = er.async_get(hass)
-    for optional_key in ("range", "soh"):
+    for optional_key in ("range", "soh", "latitude", "longitude", "current_address"):
         if optional_key in desired_keys:
             continue
         entity_id = registry.async_get_entity_id(
@@ -253,6 +280,8 @@ class CardataAnalyticsSensor(SensorEntity):
         self._attr_device_class = description.device_class
         self._attr_state_class = description.state_class
         self._attr_icon = description.icon
+        if description.key == "current_address":
+            self._attr_attribution = "© OpenStreetMap contributors"
 
         vehicle_type = entry.data.get("vehicle_type")
         model = {
@@ -292,6 +321,25 @@ class CardataAnalyticsSensor(SensorEntity):
                     "current_day_baseline_repair": self.runtime.data.get(
                         "current_day_baseline_repair"
                     ),
+                }
+            )
+
+        if self.description.key == "current_address":
+            location = self.runtime.data.get("location", {})
+            attrs.update(
+                {
+                    "latitude": self.runtime.current_latitude,
+                    "longitude": self.runtime.current_longitude,
+                    "source_available": self.runtime.location_source_available,
+                    "using_cached_address": self.runtime.using_cached_address,
+                    "geocoder": "OpenStreetMap Nominatim",
+                    "google_maps_url": self.runtime.google_maps_url,
+                    "last_geocoded": location.get("last_geocoded_at"),
+                    "geocoded_latitude": location.get("geocoded_latitude"),
+                    "geocoded_longitude": location.get("geocoded_longitude"),
+                    "display_name": location.get("display_name"),
+                    "address_details": location.get("address_details") or {},
+                    "last_geocoding_error": location.get("last_error"),
                 }
             )
 
@@ -392,6 +440,14 @@ class CardataAnalyticsSensor(SensorEntity):
             return self.runtime.current_source_soh is not None
         if self.description.key == "range":
             return self.runtime.current_range is not None
+        if self.description.key == "latitude":
+            return self.runtime.current_latitude is not None
+        if self.description.key == "longitude":
+            return self.runtime.current_longitude is not None
+        if self.description.key == "current_address":
+            # Keep the last successful address available during a temporary
+            # manufacturer/GPS outage; attributes disclose that it is cached.
+            return self.runtime.current_address is not None
         return True
 
     async def async_added_to_hass(self) -> None:

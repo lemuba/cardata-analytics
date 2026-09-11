@@ -14,6 +14,8 @@ CONF_SOH_ENTITY = "soh_entity"
 CONF_MILEAGE_ENTITY = "mileage_entity"
 CONF_ENERGY_ENTITY = "energy_entity"
 CONF_RANGE_ENTITY = "range_entity"
+CONF_LATITUDE_ENTITY = "latitude_entity"
+CONF_LONGITUDE_ENTITY = "longitude_entity"
 CONF_BATTERY_CAPACITY = "battery_capacity_kwh"
 
 VEHICLE_I3_120 = "i3_120"
@@ -26,6 +28,13 @@ DATA_CONTROLLER = "controller"
 DATA_CONTROLLER_SETUP_TASK = "controller_setup_task"
 DATA_RUNTIMES = "runtimes"
 DATA_GLOBAL_ENTRY_PENDING = "global_entry_pending"
+DATA_NOMINATIM_LOCK = "nominatim_lock"
+DATA_NOMINATIM_LAST_REQUEST = "nominatim_last_request"
+
+NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
+NOMINATIM_MIN_REQUEST_INTERVAL = 1.1
+NOMINATIM_MIN_VEHICLE_INTERVAL = 300.0
+NOMINATIM_MIN_DISTANCE_METERS = 100.0
 
 RANGE_PRESET_CUSTOM = "Benutzerdefiniert"
 RANGE_PRESET_TODAY = "Heute"

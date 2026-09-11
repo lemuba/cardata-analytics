@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.18
+
+- Added optional GPS latitude and longitude source sensors for every vehicle type, including generic BEVs and the BMW convenience presets.
+- Existing vehicles can add or change GPS sources through the normal Reconfigure flow; latitude and longitude must be configured as a pair.
+- Added analytics GPS Latitude and GPS Longitude sensors plus a Current Address sensor when GPS sources are configured.
+- Added API-key-free reverse geocoding through OpenStreetMap Nominatim with persistent per-vehicle address caching.
+- Added conservative Nominatim request controls: approximately 100 m movement threshold, five-minute per-vehicle minimum interval and a globally serialized >1 second request interval across all Cardata Analytics vehicles.
+- A temporary GPS/manufacturer-cloud or Nominatim outage keeps the last successful address available and exposes cache/source health in sensor attributes.
+- Added a Google Maps URL attribute generated directly from the current/last-known coordinates; no Google API key is required.
+- The existing dashboard card layout is intentionally unchanged in this release; location presentation can be added separately.
+
 ## 0.1.17
 
 - Fix the shared comparison-range controller being created more than once when Home Assistant sets up several Cardata Analytics config entries concurrently.

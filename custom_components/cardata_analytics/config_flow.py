@@ -14,6 +14,8 @@ from .const import (
     CONF_BATTERY_CAPACITY,
     CONF_ENERGY_ENTITY,
     CONF_ENTRY_KIND,
+    CONF_LATITUDE_ENTITY,
+    CONF_LONGITUDE_ENTITY,
     CONF_MILEAGE_ENTITY,
     CONF_RANGE_ENTITY,
     CONF_SOC_ENTITY,
@@ -140,10 +142,19 @@ class CardataAnalyticsConfigFlow(config_entries.ConfigFlow, domain="cardata_anal
     def _validate_vehicle_input(vehicle_type: str, user_input: dict[str, Any]) -> dict[str, str]:
         """Validate combinations that cannot be expressed by the form schema alone."""
         errors: dict[str, str] = {}
+        latitude_entity = user_input.get(CONF_LATITUDE_ENTITY)
+        longitude_entity = user_input.get(CONF_LONGITUDE_ENTITY)
+        if bool(latitude_entity) != bool(longitude_entity):
+            errors["base"] = "gps_pair_required"
+
         if vehicle_type == VEHICLE_GENERIC_BEV:
             energy_entity = user_input.get(CONF_ENERGY_ENTITY)
             fixed_capacity = user_input.get(CONF_BATTERY_CAPACITY)
-            if not energy_entity and fixed_capacity in (None, ""):
+            if (
+                not energy_entity
+                and fixed_capacity in (None, "")
+                and "base" not in errors
+            ):
                 errors["base"] = "capacity_source_required"
         return errors
 
@@ -171,6 +182,8 @@ class CardataAnalyticsConfigFlow(config_entries.ConfigFlow, domain="cardata_anal
             required_entity(CONF_SOC_ENTITY): sensor_selector,
             required_entity(CONF_MILEAGE_ENTITY): sensor_selector,
             optional_entity(CONF_RANGE_ENTITY): sensor_selector,
+            optional_entity(CONF_LATITUDE_ENTITY): sensor_selector,
+            optional_entity(CONF_LONGITUDE_ENTITY): sensor_selector,
         }
 
         if vehicle_type in (VEHICLE_I3_120, VEHICLE_IX1):
