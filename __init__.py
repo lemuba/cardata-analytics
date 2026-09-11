@@ -34,8 +34,9 @@ from .poi import async_register_websocket
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.23"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.26.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.26"
+FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
 
@@ -61,7 +62,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
         existing = [
             item
             for item in resources.async_items()
-            if str(item.get(CONF_URL, "")).split("?", 1)[0] == FRONTEND_CARD_PATH
+            if str(item.get(CONF_URL, "")).split("?", 1)[0].startswith(FRONTEND_CARD_PREFIX)
         ]
         if not existing:
             _LOGGER.warning(
@@ -76,7 +77,7 @@ async def _async_register_lovelace_resource(hass: HomeAssistant) -> None:
     matches = [
         item
         for item in resources.async_items()
-        if str(item.get(CONF_URL, "")).split("?", 1)[0] == FRONTEND_CARD_PATH
+        if str(item.get(CONF_URL, "")).split("?", 1)[0].startswith(FRONTEND_CARD_PREFIX)
     ]
 
     if not matches:
