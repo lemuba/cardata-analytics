@@ -1,13 +1,23 @@
 # Changelog
 
+## 0.1.24
+
+- Hard frontend cache bust: the Lovelace module now uses the new filename `cardata-analytics-card-0.1.24.js`, and storage-mode Lovelace resources matching older Cardata Analytics filenames are automatically replaced/cleaned up.
+- POI requests now always use the Home Assistant WebSocket backend; a legacy `overpass_url` setting can no longer silently switch back to browser-direct/CORS-sensitive Overpass requests.
+- Corrected both backend and remaining frontend Overpass query builders from `out tags center` to `out center`, preserving latitude/longitude for node POIs while adding centers for ways/relations.
+- Empty POI results are not cached.
+- Overpass backend fallbacks: `overpass-api.de`, `overpass.kumi.systems`, then `overpass.private.coffee`.
+- Added 50 km POI radius and pharmacy matching for both `amenity=pharmacy` and `healthcare=pharmacy` (retained from the previous POI fixes).
+- Satellite mode defaults to the API-key-free ArcGIS World Imagery XYZ endpoint used by the supplied Bosch eBike comparison card, with visible source attribution; custom `satellite_url` / `satellite_attribution` can still override it.
+- The map header and POI note show frontend version `0.1.24` to make stale-browser-resource problems immediately visible.
+- Analytics, Daily Ledger, historical range, vehicle and GPS calculation logic remain unchanged.
 
 ## 0.1.23
 
-- Fixed POI coordinates from Overpass: switched from `out tags center` to `out center`, preserving latitude/longitude for node POIs while still adding centers for ways/relations.
-- Empty POI results are no longer cached in either the browser or the Home Assistant backend.
-- Added `overpass.kumi.systems` as a third automatic Overpass fallback.
-- Added an API-key-free default Satellite layer using Esri World Imagery, with visible source attribution; custom `satellite_url` / `satellite_attribution` still override it.
-- Kept Analytics, Daily Ledger and historical range calculation logic unchanged.
+- Corrected the server-side Overpass query to preserve node coordinates with `out center`.
+- Stopped caching empty POI results.
+- Added `overpass.kumi.systems` as an additional public Overpass fallback.
+- Added a key-free ArcGIS World Imagery satellite default with attribution.
 
 ## 0.1.22
 

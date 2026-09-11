@@ -106,7 +106,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.23 "
+                            "Cardata Analytics/0.1.24 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },

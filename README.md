@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.23 expands the separate interactive vehicle map:
+Version 0.1.24 expands the separate interactive vehicle map:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -222,7 +222,7 @@ For a custom provider, `satellite_url` must be HTTPS and contain `{z}`, `{x}` an
 
 POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km, 25 km and 50 km**.
 
-Available filters in 0.1.23:
+Available filters in 0.1.24:
 
 - EV charging stations
 - Vehicle workshops / car repair
