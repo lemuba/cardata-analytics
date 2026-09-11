@@ -1,5 +1,18 @@
 # Changelog
 
+
+## 0.1.19
+
+- Added a second Lovelace card: `custom:cardata-analytics-map-card`.
+- Automatically discovers every Cardata Analytics vehicle with configured latitude/longitude sensors.
+- Added OSM and OpenTopoMap map modes plus a GPS follow mode for the selected vehicle.
+- Added plus/minus zoom, drag/touch panning, fullscreen mode and a fullscreen fallback for restricted clients.
+- Added per-vehicle visibility controls, show-all/hide-all and automatic fit-to-visible-vehicles.
+- Added vehicle marker popups with current address, SoC, remaining range, odometer, GPS freshness and a Google Maps link.
+- Added local browser persistence for map mode, zoom, center, selected vehicle and visibility choices.
+- Kept the analytics calculations, daily ledger, date-range calculations and Nominatim reverse-geocoding behavior unchanged from 0.1.18 (only the Nominatim User-Agent version string is bumped).
+- POI/charging/workshop discovery remains intentionally deferred to a later map release.
+
 ## 0.1.18
 
 - Added optional GPS latitude and longitude source sensors for every vehicle type, including generic BEVs and the BMW convenience presets.

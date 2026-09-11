@@ -143,17 +143,17 @@ When the upstream source later provides enough aggregate evidence to identify ex
 
 Coverage is evaluated separately for each vehicle from the vehicle's actual daily ledger. Every historical calendar day requested by the selected range must exist as a complete ledger entry; a config-entry or tracking timestamp alone is not treated as proof that historical data exists. If any requested historical day is missing, the dashboard does **not** present the available overlap as the result for the whole requested range. The selected-period values are shown as unavailable (`—`) and the card displays a per-vehicle coverage warning including the number of covered historical days. Any calculable overlap is retained only as diagnostic sensor attributes (`partial_distance_km`, `partial_energy_kwh`, `partial_average_consumption`).
 
-## Dashboard card
+## Dashboard cards
 
-Cardata Analytics includes its own Lovelace card:
+Cardata Analytics includes two Lovelace cards. Both are registered from the same frontend module and automatically discover Cardata Analytics vehicles, so no hard-coded entity IDs are required.
+
+### Analytics card
 
 ```yaml
 type: custom:cardata-analytics-card
 ```
 
-The card automatically discovers all vehicles and analytics entities created by this integration. No hard-coded entity IDs are required.
-
-It automatically expands when additional vehicles are added and provides:
+The analytics card automatically expands when additional vehicles are added and provides:
 
 - Vehicle overview
 - SoC and optional SoH
@@ -165,7 +165,38 @@ It automatically expands when additional vehicles are added and provides:
 - Custom comparison-period values
 - Shared date and preset controls
 
-The card is registered as a Lovelace module resource automatically when Home Assistant uses storage mode.
+### Vehicle map card
+
+Version 0.1.19 adds a separate interactive vehicle map:
+
+```yaml
+type: custom:cardata-analytics-map-card
+title: Cardata Vehicle Map
+height: 520
+```
+
+The map automatically includes every configured vehicle that has Cardata Analytics latitude and longitude sensors. It provides:
+
+- OpenStreetMap street-map mode
+- OpenTopoMap topographic mode
+- GPS follow mode, which continuously recenters the map on the selected vehicle while using the OSM map underneath
+- Plus/minus zoom controls and mouse/touch panning
+- Fullscreen button with a CSS fullscreen fallback for clients where the browser Fullscreen API is unavailable
+- Show/hide controls for every configured vehicle
+- **Show all / hide all** vehicle controls
+- **Fit all visible vehicles** button
+- Clickable vehicle markers with address, SoC, remaining range, odometer and GPS-age information
+- **Follow** action for an individual vehicle
+- **Google Maps** link from the vehicle popup
+- Remembered map mode, zoom, center, selected vehicle and visibility choices in browser-local storage
+
+`height` is optional and is specified in pixels. The default is `520`.
+
+The OSM and Topo layers load public map tiles directly in the browser and therefore contact the corresponding public tile service for the currently visible map area. The required map attribution is shown directly on the card.
+
+Points of interest, nearby charging stations and workshops are intentionally not included in 0.1.19. They are planned as a separate map expansion so POI querying, caching and provider usage limits can be handled independently from the stable vehicle-position view.
+
+The cards are registered as a Lovelace module resource automatically when Home Assistant uses storage mode.
 
 After installing or updating the integration, restart Home Assistant. A normal browser or Companion App reload should then be sufficient.
 

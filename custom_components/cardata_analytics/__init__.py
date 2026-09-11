@@ -34,7 +34,7 @@ _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
 FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.18"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.19"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
 
