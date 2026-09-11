@@ -53,11 +53,13 @@ OVERPASS_ENDPOINTS = (
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 )
 
-# Charging infrastructure is deliberately bulk-cached locally.  The map's
-# charging search therefore does not depend on a public query service for every
-# radius/filter change.  Eco-Movement publishes AFIR/DATEX-II data through the
-# German national access point (Mobilithek).  Bundesnetzagentur publishes a
-# monthly CC-BY CSV which is normalized and stored locally as a fallback.
+# Charging infrastructure is deliberately bulk-cached locally.  Since 0.1.31
+# the Bundesnetzagentur register is the authoritative primary source for German
+# charging searches.  The large CSV is downloaded in the background and then
+# all radius/operator/connector/power filtering happens locally.  This avoids
+# making interactive charging searches depend on Overpass/QLever/AFIR uptime.
+# The older AFIR parser remains available for compatibility, but is no longer a
+# blocking or required path for user searches.
 AFIR_ECOMOVEMENT_PUBLICATION_ID = "954064102947180544"
 AFIR_ECOMOVEMENT_URL = (
     "https://mobilithek.info/mdp-api/mdp-conn-server/v1/publication/"
@@ -275,7 +277,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.30 "
+                            "Cardata Analytics/0.1.31 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -925,7 +927,7 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
             headers={
                 "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
                 "Accept-Encoding": "gzip",
-                "User-Agent": "Cardata Analytics/0.1.30 (https://github.com/lemuba/cardata-analytics)",
+                "User-Agent": "Cardata Analytics/0.1.31 (https://github.com/lemuba/cardata-analytics)",
             },
             allow_redirects=True,
         ) as response:
@@ -956,7 +958,7 @@ async def _async_discover_bnetza_csv_url(hass: HomeAssistant) -> str:
         async with asyncio.timeout(15.0):
             async with session.get(
                 BNETZA_PAGE_URL,
-                headers={"User-Agent": "Cardata Analytics/0.1.30"},
+                headers={"User-Agent": "Cardata Analytics/0.1.31"},
             ) as response:
                 if response.status != 200:
                     raise RuntimeError(f"HTTP {response.status}")
@@ -974,27 +976,59 @@ async def _async_discover_bnetza_csv_url(hass: HomeAssistant) -> str:
 
 
 async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
+    """Refresh the full BNetzA register without blocking POI requests.
+
+    The official CSV is about 50 MB.  Stream it to a temporary file first so
+    Home Assistant does not need another 50 MB response buffer on top of the
+    parser/cache objects.  The previous successful cache is left untouched until
+    the replacement has parsed successfully.
+    """
     url = await _async_discover_bnetza_csv_url(hass)
     session = async_get_clientsession(hass)
-    async with asyncio.timeout(75.0):
-        async with session.get(
-            url,
-            headers={"Accept": "text/csv, application/octet-stream;q=0.8, */*;q=0.5", "User-Agent": "Cardata Analytics/0.1.30"},
-            allow_redirects=True,
-        ) as response:
-            if response.status != 200:
-                raise RuntimeError(f"Bundesnetzagentur CSV: HTTP {response.status}")
-            body = await response.read()
-    elements = await hass.async_add_executor_job(_parse_bnetza_csv, body)
-    dataset = {
-        "provider": "bnetza",
-        "elements": elements,
-        "fetched_at": time.time(),
-        "source_url": url,
-    }
-    await hass.async_add_executor_job(_write_dataset_cache, _dataset_cache_path(hass, "bnetza"), dataset)
-    hass.data.setdefault(DOMAIN, {}).setdefault(DATA_CHARGING_DATASETS, {})["bnetza"] = dataset
-    return dataset
+    cache_dir = Path(hass.config.path('.storage'))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_dir / f"{DOMAIN}_bnetza_download.tmp"
+    try:
+        async with asyncio.timeout(6 * 60):
+            async with session.get(
+                url,
+                headers={
+                    "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
+                    "Accept-Encoding": "identity",
+                    "User-Agent": "Cardata Analytics/0.1.31",
+                },
+                allow_redirects=True,
+            ) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"Bundesnetzagentur CSV: HTTP {response.status}")
+                total = 0
+                with tmp_path.open('wb') as handle:
+                    async for chunk in response.content.iter_chunked(256 * 1024):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        total += len(chunk)
+                if total < 1_000_000:
+                    raise RuntimeError(f"Bundesnetzagentur CSV: Antwort unerwartet klein ({total} Bytes)")
+
+        body = await hass.async_add_executor_job(tmp_path.read_bytes)
+        elements = await hass.async_add_executor_job(_parse_bnetza_csv, body)
+        dataset = {
+            "provider": "bnetza",
+            "elements": elements,
+            "fetched_at": time.time(),
+            "source_url": url,
+        }
+        await hass.async_add_executor_job(
+            _write_dataset_cache, _dataset_cache_path(hass, "bnetza"), dataset
+        )
+        hass.data.setdefault(DOMAIN, {}).setdefault(DATA_CHARGING_DATASETS, {})["bnetza"] = dataset
+        return dataset
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 async def _async_start_dataset_refresh(hass: HomeAssistant, provider: str) -> asyncio.Task[dict[str, Any]]:
@@ -1134,86 +1168,57 @@ def _filter_charging_dataset(elements: list[dict[str, Any]], msg: dict[str, Any]
 
 async def _async_collect_local_charging(
     hass: HomeAssistant, msg: dict[str, Any]
-) -> tuple[list[dict[str, Any]], list[str], list[str], bool]:
-    """Return locally searchable charging data without per-query public APIs."""
+) -> tuple[list[dict[str, Any]], list[str], list[str], bool, bool]:
+    """Return charging data from the persistent BNetzA bulk cache.
+
+    User requests never wait for a third-party charging API.  When the local
+    database does not exist yet, a single background download is started and the
+    frontend receives a short-lived ``building`` state instead of a timeout.
+    """
     warnings: list[str] = []
     sources: list[str] = []
     provider_available = False
+    initializing = False
 
-    # AFIR is the primary source and small enough to await once when a fresh
-    # installation has no local cache.  BNetzA's ~50 MB monthly CSV is warmed in
-    # the background and never blocks the normal map query on first use.
-    afir_dataset: dict[str, Any] = {"elements": []}
     bnetza_dataset: dict[str, Any] = {"elements": []}
-    try:
-        afir_dataset, afir_warnings = await _async_get_charging_dataset(
-            hass, "afir", wait_if_empty=True
-        )
-        warnings.extend(afir_warnings)
-        provider_available = provider_available or bool(afir_dataset.get("elements"))
-    except Exception as err:
-        warnings.append(f"AFIR/Mobilithek: {err}")
-
     try:
         bnetza_dataset, bnetza_warnings = await _async_get_charging_dataset(
             hass, "bnetza", wait_if_empty=False
         )
         warnings.extend(bnetza_warnings)
-        provider_available = provider_available or bool(bnetza_dataset.get("elements"))
+        provider_available = bool(bnetza_dataset.get("elements"))
+        initializing = not provider_available
     except Exception as err:
         warnings.append(f"Bundesnetzagentur: {err}")
-
-    filtered_tasks = []
-    labels = []
-    if afir_dataset.get("elements"):
-        filtered_tasks.append(
-            hass.async_add_executor_job(_filter_charging_dataset, afir_dataset["elements"], msg)
-        )
-        labels.append("AFIR / Mobilithek")
-    if bnetza_dataset.get("elements"):
-        filtered_tasks.append(
-            hass.async_add_executor_job(_filter_charging_dataset, bnetza_dataset["elements"], msg)
-        )
-        labels.append("Bundesnetzagentur lokal")
+        initializing = True
+        try:
+            await _async_start_dataset_refresh(hass, "bnetza")
+        except Exception:
+            pass
 
     combined: list[dict[str, Any]] = []
-    if filtered_tasks:
-        results = await asyncio.gather(*filtered_tasks, return_exceptions=True)
-        for label, result in zip(labels, results):
-            if isinstance(result, Exception):
-                warnings.append(f"{label}: lokale Filterung fehlgeschlagen ({result})")
-            else:
-                combined.extend(result)
-                sources.append(label)
-    return _merge_cross_provider_charging(combined), sources, warnings, provider_available
+    if bnetza_dataset.get("elements"):
+        try:
+            filtered = await hass.async_add_executor_job(
+                _filter_charging_dataset, bnetza_dataset["elements"], msg
+            )
+            combined.extend(filtered)
+            sources.append("Bundesnetzagentur lokal")
+        except Exception as err:
+            warnings.append(f"Bundesnetzagentur lokal: Filterung fehlgeschlagen ({err})")
+
+    return _merge_cross_provider_charging(combined), sources, warnings, provider_available, initializing
 
 
 async def async_warm_charging_sources(hass: HomeAssistant) -> None:
-    """Warm charging caches without competing with the primary AFIR download.
-
-    This coroutine itself is started as a Home Assistant background task.  On a
-    fresh install we give the comparatively small AFIR feed priority and only
-    start the ~50 MB BNetzA bulk refresh after AFIR has finished (or failed).
-    That keeps first-use IONITY/CCS searches responsive on slower HA hosts.
-    """
+    """Warm the authoritative BNetzA charging cache in the background."""
     try:
-        afir = await _async_load_disk_dataset(hass, "afir")
-        afir_age = time.time() - float(afir.get("fetched_at", 0.0) or 0.0)
-        if not afir.get("elements") or afir_age > CHARGING_AFIR_TTL_SECONDS:
-            afir_task = await _async_start_dataset_refresh(hass, "afir")
-            try:
-                await asyncio.shield(afir_task)
-            except Exception as err:
-                _LOGGER.debug("AFIR warm-up failed; BNetzA fallback will still be prepared: %s", err)
-
         bnetza = await _async_load_disk_dataset(hass, "bnetza")
         bnetza_age = time.time() - float(bnetza.get("fetched_at", 0.0) or 0.0)
         if not bnetza.get("elements") or bnetza_age > CHARGING_BNETZA_TTL_SECONDS:
-            # Do not await the large monthly CSV: the refresh remains fully in
-            # the background and the previous cache stays usable meanwhile.
             await _async_start_dataset_refresh(hass, "bnetza")
     except Exception:
-        _LOGGER.exception("Could not warm Cardata charging datasets")
+        _LOGGER.exception("Could not warm Cardata charging database")
 
 
 def _normalized_identity_text(tags: dict[str, Any]) -> set[str]:
@@ -1330,10 +1335,12 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
             )
 
         charging_provider_available = False
+        charging_initializing = False
         if charging_requested:
-            charging_elements, charging_sources, charging_warnings, charging_provider_available = (
-                await _async_collect_local_charging(hass, msg)
-            )
+            (
+                charging_elements, charging_sources, charging_warnings,
+                charging_provider_available, charging_initializing,
+            ) = await _async_collect_local_charging(hass, msg)
             combined.extend(charging_elements)
             sources.extend(charging_sources)
             warnings.extend(charging_warnings)
@@ -1346,30 +1353,11 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
             except Exception as err:
                 warnings.append(f"Overpass: {err}")
 
-        # OSM is only a bounded emergency fallback for charging.  A working
-        # AFIR/BNetzA cache returning zero filtered matches is a valid result and
-        # must never trigger another public-query dependency.
-        if charging_requested and not charging_provider_available:
-            query = _build_overpass_query(
-                float(msg["latitude"]),
-                float(msg["longitude"]),
-                int(msg["radius_km"]),
-                ["charging"],
-                int(msg["max_results"]),
-                min(18, int(msg["timeout_seconds"])),
-                str(msg.get("search_filter", "")),
-                str(msg.get("operator_filter", "")),
-                str(msg.get("connector_filter", "any")),
-            )
-            try:
-                fallback, endpoint = await _async_fetch_overpass(hass, query, min(18, int(msg["timeout_seconds"])))
-                fallback = _aggregate_osm_charging(fallback, "osm")
-                fallback = await hass.async_add_executor_job(_filter_charging_dataset, fallback, msg)
-                combined.extend(fallback)
-                sources.append(_endpoint_host(endpoint))
-                warnings.append("Ladestationen: OSM-Notfallfallback aktiv")
-            except Exception as err:
-                warnings.append(f"OSM-EV-Fallback: {err}")
+        # Charging deliberately has no live OSM/Overpass fallback anymore.
+        # If the local BNetzA database is still being built, return quickly and
+        # let the frontend retry locally.  This makes charging searches immune to
+        # public-query timeouts and guarantees that IONITY is sourced from the
+        # official German register once initialization has completed.
 
         combined = _merge_cross_provider_charging(combined)
         origin_lat = float(msg["latitude"])
@@ -1385,14 +1373,22 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
         max_results = int(msg["max_results"])
         combined = combined[: max_results * 2]
 
-        if not combined and warnings and not charging_provider_available and not sources:
+        if (
+            not combined and warnings and not charging_provider_available and not sources
+            and not (charging_requested and charging_initializing)
+        ):
             raise RuntimeError(" · ".join(warnings))
 
+        charging_status = "ready" if charging_provider_available else ("building" if charging_requested else "unused")
         return {
             "elements": combined,
-            "endpoint": " + ".join(dict.fromkeys(sources)) or "Lokaler POI-Cache",
+            "endpoint": " + ".join(dict.fromkeys(sources)) or (
+                "Ladesäulen-Datenbank wird aufgebaut" if charging_status == "building" else "Lokaler POI-Cache"
+            ),
             "sources": list(dict.fromkeys(sources)),
             "warnings": warnings,
+            "charging_status": charging_status,
+            "retry_after_seconds": 10 if charging_status == "building" else 0,
             "stored_at": time.monotonic(),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         }
@@ -1421,6 +1417,8 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
             "endpoint": cached["endpoint"],
             "sources": cached.get("sources", []),
             "warnings": cached.get("warnings", []),
+            "charging_status": cached.get("charging_status", "ready"),
+            "retry_after_seconds": 0,
             "cached": True,
             "elapsed_ms": 0,
         }
@@ -1458,6 +1456,8 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
         "endpoint": result["endpoint"],
         "sources": result.get("sources", []),
         "warnings": result.get("warnings", []),
+        "charging_status": result.get("charging_status", "unused"),
+        "retry_after_seconds": int(result.get("retry_after_seconds", 0) or 0),
         "cached": False,
         "elapsed_ms": int(result.get("elapsed_ms", 0)),
     }

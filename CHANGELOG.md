@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.31
+
+- Made the official **Bundesnetzagentur charging register** the authoritative charging source. IONITY/Tesla/operator, CCS and power filters are now evaluated from the persistent local BNetzA dataset instead of depending on AFIR/Overpass coverage.
+- Removed every live Overpass/OSM fallback from the charging path. A charging-only search therefore cannot time out because a public Overpass instance is slow or unavailable. General non-charging POIs still use Overpass independently.
+- Changed first-use behavior: when the local charging database is not ready yet, the websocket returns immediately with a `building` state instead of waiting for an external provider. The map automatically retries every few seconds until the local dataset is ready.
+- Reworked the ~50 MB BNetzA CSV refresh to stream into a temporary file with a long background deadline. The previous successful cache remains untouched until the new file has downloaded and parsed successfully.
+- Preserved stale-while-revalidate behavior. After one successful download, all 2–200 km radius changes, IONITY/Tesla/operator searches, connector filters and power filters are purely local operations.
+- The existing AFIR parser remains in the codebase for compatibility/possible future enrichment, but AFIR is no longer a required or blocking source for charging searches.
+- IONITY is recognized from the official operator name and from `DE*IOY*...` EVSE identifiers in the BNetzA register.
+- Kept the latest-request-wins frontend loader, OpenFreeMap/Topo/Satellite/GPS modes, presets/filters and all Analytics/Daily Ledger/range logic unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.31.js?v=0.1.31`.
+
 ## 0.1.30
 
 - Reworked EV charging POIs around persistent bulk data instead of per-search public query services. Charging searches now use the open **AFIR / Mobilithek Eco-Movement** DATEX-II publication as the primary source and the monthly **Bundesnetzagentur** charging-register CSV as an independent local fallback.
