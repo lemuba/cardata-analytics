@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from typing import Any
 
@@ -32,6 +33,7 @@ OVERPASS_ENDPOINTS = (
 
 POI_CLAUSES: dict[str, tuple[str, ...]] = {
     "charging": ('["amenity"="charging_station"]',),
+    "fuel": ('["amenity"="fuel"]',),
     "workshop": ('["shop"="car_repair"]', '["craft"="car_repair"]'),
     "restaurant": ('["amenity"="restaurant"]',),
     "cafe": ('["amenity"="cafe"]',),
@@ -51,14 +53,42 @@ def _build_overpass_query(
     categories: list[str],
     max_results: int,
     timeout_seconds: int,
+    operator_filter: str = "",
+    connector_filter: str = "any",
 ) -> str:
     """Build a bounded Overpass QL query from validated POI options."""
     radius_m = max(500, radius_km * 1000)
     around = f"(around:{radius_m},{latitude:.6f},{longitude:.6f})"
     clauses: list[str] = []
+    operator_filter = operator_filter.strip()[:80]
+    connector_filter = connector_filter if connector_filter in {"any", "ccs", "type2", "chademo", "tesla"} else "any"
+
+    # A user-entered operator/network string is narrowed server-side so a 50 km
+    # IONITY/Shell/etc. search is not lost behind the generic result cap.
+    # Values are escaped as literal regex text before being embedded in QL.
+    regex = re.escape(operator_filter).replace('"', r'\"') if operator_filter else ""
+    operator_variants = [""] if not regex else [
+        f'["operator"~"{regex}",i]',
+        f'["brand"~"{regex}",i]',
+        f'["network"~"{regex}",i]',
+        f'["name"~"{regex}",i]',
+    ]
+    connector_variants = {
+        "any": [""],
+        "ccs": ['["socket:ccs"]', '["socket:type2_combo"]', '["socket:ccs:output"]', '["socket:type2_combo:output"]'],
+        "type2": ['["socket:type2"]', '["socket:type2:output"]'],
+        "chademo": ['["socket:chademo"]', '["socket:chademo:output"]'],
+        "tesla": ['["socket:tesla_supercharger"]', '["socket:tesla_destination"]', '["socket:tesla_supercharger:output"]', '["socket:tesla_destination:output"]'],
+    }
+
     for category in sorted(set(categories)):
         for filter_expression in POI_CLAUSES.get(category, ()):  # validated above
-            clauses.append(f"nwr{filter_expression}{around};")
+            connectors = connector_variants[connector_filter] if category == "charging" else [""]
+            for operator_expression in operator_variants:
+                for connector_expression in connectors:
+                    clauses.append(
+                        f"nwr{filter_expression}{operator_expression}{connector_expression}{around};"
+                    )
 
     # Keep the server-side timeout slightly below the HTTP timeout so Overpass
     # can return a useful status instead of being cut off by the client first.
@@ -84,6 +114,8 @@ def _cache_key(msg: dict[str, Any]) -> tuple[Any, ...]:
         int(msg["radius_km"]),
         tuple(sorted(set(msg["categories"]))),
         int(msg["max_results"]),
+        str(msg.get("operator_filter", "")).strip().lower(),
+        str(msg.get("connector_filter", "any")),
     )
 
 
@@ -106,7 +138,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.24 "
+                            "Cardata Analytics/0.1.25 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -184,6 +216,8 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
             list(msg["categories"]),
             int(msg["max_results"]),
             int(msg["timeout_seconds"]),
+            str(msg.get("operator_filter", "")),
+            str(msg.get("connector_filter", "any")),
         )
         domain_data[DATA_POI_LAST_REQUEST] = time.monotonic()
         payload, endpoint = await _async_fetch_overpass(
@@ -232,6 +266,8 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
             [vol.In(tuple(POI_CLAUSES))],
             vol.Length(min=1, max=len(POI_CLAUSES)),
         ),
+        vol.Optional("operator_filter", default=""): vol.All(str, vol.Length(max=80)),
+        vol.Optional("connector_filter", default="any"): vol.In(["any", "ccs", "type2", "chademo", "tesla"]),
         vol.Optional("max_results", default=500): vol.All(
             vol.Coerce(int), vol.Range(min=50, max=1000)
         ),

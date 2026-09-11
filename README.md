@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.24 expands the separate interactive vehicle map:
+Version 0.1.25 expands the separate interactive vehicle map:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -222,9 +222,10 @@ For a custom provider, `satellite_url` must be HTTPS and contain `{z}`, `{x}` an
 
 POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km, 25 km and 50 km**.
 
-Available filters in 0.1.24:
+Available POI categories in 0.1.25:
 
 - EV charging stations
+- Fuel stations
 - Vehicle workshops / car repair
 - Restaurants
 - Cafés
@@ -234,6 +235,18 @@ Available filters in 0.1.24:
 - Pharmacies
 - Hospitals
 - Public toilets
+
+POI filters in 0.1.25 can be combined freely. In addition to category and radius, the panel supports:
+
+- free-text filtering across POI name, address, brand, operator and network
+- operator/network filtering such as `IONITY`, `Shell` or `EnBW` (also narrowed server-side before the Overpass result limit)
+- charging connector filters for CCS, Type 2, CHAdeMO and Tesla connector tags
+- minimum charging power presets from 50 to 350 kW when OSM provides output-power tags
+- an option to include or exclude charging sites whose power is unknown in OSM
+- built-in presets such as **IONITY Schnellladen**, **Schnellladen ≥100 kW**, **Tankstellen**, **Essen & Pause** and **Parken & Laden**
+- user-defined presets that can be saved, overwritten and deleted locally in the browser
+
+Custom presets store the selected categories, radius, text/operator filters, connector, minimum power and unknown-power option. They intentionally remain browser-local in 0.1.25; this keeps the analytics/ledger backend untouched.
 
 POIs are queried from OpenStreetMap through the public Overpass API only after POI filters are enabled. By default the Lovelace card sends the POI request to the Cardata Analytics backend over Home Assistant's existing websocket connection, and Home Assistant performs the external Overpass request. This avoids depending on third-party CORS or Companion WebView networking. Cardata Analytics combines selected filters into one request, debounces filter changes, serializes/rate-limits server-side access, limits displayed results, and caches successful results both in browser-local storage and briefly in Home Assistant memory. This is designed for occasional personal dashboard use rather than continuous or high-volume POI harvesting.
 
@@ -247,7 +260,7 @@ poi_max_results: 500
 poi_request_timeout_seconds: 35
 ```
 
-`overpass_url` must use HTTPS. When `overpass_url` is omitted, Home Assistant performs the request server-side and first tries `overpass-api.de`, then `overpass.private.coffee` if the first request fails or times out. An explicitly configured custom `overpass_url` remains browser-direct by design, so the integration does not expose an arbitrary server-side URL proxy. `poi_cache_minutes` is clamped to 5–120 minutes, `poi_max_results` to 50–1000, and `poi_request_timeout_seconds` to 15–90 seconds.
+`overpass_url` must use HTTPS. When `overpass_url` is omitted, Home Assistant performs the request server-side and first tries `overpass-api.de`, then `overpass.kumi.systems` and `overpass.private.coffee` if earlier requests fail or time out. `overpass_url` is retained only for backwards-compatible card configuration; normal POI requests remain routed through Home Assistant. `poi_cache_minutes` is clamped to 5–120 minutes, `poi_max_results` to 50–1000, and `poi_request_timeout_seconds` to 15–90 seconds.
 
 Nearby POIs are clustered automatically when several markers overlap at the current zoom level. Clicking a cluster zooms further in. Clicking an individual POI shows its category, available OSM address/details and straight-line distance from the selected vehicle. When present in OSM, the popup also includes opening hours, operator/brand, phone, website, access/fee information, capacity and charging-connector tags.
 
@@ -259,7 +272,7 @@ Every POI popup offers:
 
 Google Maps URLs do not require a Google API key. On iOS/Android, the universal Google Maps link can open the installed Google Maps app; otherwise it opens in a browser.
 
-The OSM and Topo tile layers contact public OpenStreetMap-related services from the browser. Default POI queries are sent through the Home Assistant backend; only an explicitly configured custom `overpass_url` is contacted directly by the browser. The required attribution is shown in the map or POI panel. Public services are best-effort and may rate-limit requests.
+The OSM and Topo tile layers contact public OpenStreetMap-related services from the browser. POI queries are sent through the Home Assistant backend. The required attribution is shown in the map or POI panel. Public services are best-effort and may rate-limit requests.
 
 The cards are registered as a Lovelace module resource automatically when Home Assistant uses storage mode.
 

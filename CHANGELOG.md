@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.25
+
+- Added **fuel stations** (`amenity=fuel`) as a selectable POI category.
+- Added free-text POI filtering across name/address/brand/operator/network.
+- Added operator/network filtering (for example IONITY or Shell); this filter is also sent to the Home Assistant Overpass backend so targeted 50 km searches are narrowed before the result limit.
+- Added EV connector filters for CCS, Type 2, CHAdeMO and Tesla connector tags.
+- Added minimum charging-power filters (50/100/150/200/300/350 kW) plus an option to include POIs whose charging power is unknown in OSM.
+- Added parsing/display of charging output power from common OSM `*:output`, `charging_station:output`, `max_power` and `output` tags.
+- Added built-in POI filter presets: all charging stations, ≥100 kW fast charging, IONITY fast charging, fuel stations, food/break and parking/charging.
+- Added browser-local custom POI presets that store the complete filter combination and can be saved/overwritten or deleted.
+- Bumped the POI browser cache generation so older unfiltered cache entries cannot mask the new filter metadata.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.25.js?v=0.1.25`.
+- Analytics, Daily Ledger, historical range, GPS and vehicle calculation logic remain unchanged.
+
 ## 0.1.24
 
 - Hard frontend cache bust: the Lovelace module now uses the new filename `cardata-analytics-card-0.1.24.js`, and storage-mode Lovelace resources matching older Cardata Analytics filenames are automatically replaced/cleaned up.
