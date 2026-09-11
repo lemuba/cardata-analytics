@@ -1,16 +1,19 @@
 # Changelog
 
-## 0.1.29
+## 0.1.30
 
-- Reworked EV charging POIs into a multi-provider path: general POIs still use OSM/Overpass, while charging searches use QLever OSM Planet as the primary OSM query path and, when the search circle overlaps Germany, additionally query the public Bundesnetzagentur charging-station map dataset; Overpass is only an EV fallback if QLever is unavailable.
-- Added OSM charge-point aggregation: separately mapped `man_made=charge_point` objects within 180 m are merged into their `amenity=charging_station` location before connector/power filters are applied. Standalone charge points are promoted to charging locations.
-- Fixed targeted IONITY/CCS searches that could miss real stations when brand/operator or socket/output tags existed only on individual charge-point objects instead of the parent station.
-- Charging-only searches no longer wait on public Overpass proxies in normal operation. QLever/Bundesnetzagentur are queried independently; Overpass is reserved as a bounded EV fallback if QLever is unavailable. Mixed non-charging category searches still use Overpass for those general POIs.
-- Added conservative cross-provider deduplication/metadata merging for OSM, QLever and Bundesnetzagentur charging results, with source information shown in POI popups.
-- Provider failures are tolerated when another source succeeds; the POI status indicates when fallback data was used.
-- Large merged provider result sets are sorted by distance before truncation, avoiding arbitrary loss of nearby stations in 100–200 km searches.
-- Kept the existing latest-request-wins loader, watchdog/retry logic, 2–200 km radii, presets/filters, map providers and all Analytics/Daily Ledger/range logic unchanged.
-- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.29.js?v=0.1.29`.
+- Reworked EV charging POIs around persistent bulk data instead of per-search public query services. Charging searches now use the open **AFIR / Mobilithek Eco-Movement** DATEX-II publication as the primary source and the monthly **Bundesnetzagentur** charging-register CSV as an independent local fallback.
+- Added persistent compressed charging caches under Home Assistant `.storage`. Once a source has been downloaded, 2–200 km radius changes, IONITY/Tesla/operator searches, connector filters and power filters run locally without a new external request for every map interaction.
+- Added stale-while-revalidate behavior: an existing charging cache remains usable while a refresh happens in the background. A temporary external outage therefore no longer removes already known charging stations from the map.
+- Removed QLever and the token-dependent Bundesnetzagentur ArcGIS/API path from the critical charging workflow. OSM/Overpass is used for charging only as a bounded emergency fallback when neither local charging dataset is available.
+- Added DATEX-II AFIR normalization for station/operator, EVSE IDs, CCS/Type 2/CHAdeMO/Tesla connectors, connector power, station power, capacity, address and coordinates. IONITY is also recognized from `DE*IOY*...` EVSE identifiers.
+- Added Bundesnetzagentur CSV normalization for the same Cardata charging model, including repeated connector/power/EVSE columns and German decimal-comma values. The current CSV URL is discovered from the official BNetzA page; a dated URL is only a bootstrap fallback.
+- The large BNetzA CSV is refreshed in the background and does not block the first map query. AFIR is small enough to be awaited once on a fresh installation; after that both sources are local-cache-first.
+- General non-charging POIs continue to use the robust Overpass failover/state-machine path from 0.1.28/0.1.29.
+- Kept the existing latest-request-wins loader, watchdog/retry logic, 2–200 km radii, presets/filters, OpenFreeMap/Topo/Satellite/GPS modes and all Analytics/Daily Ledger/range logic unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.30.js?v=0.1.30`.
+
+## 0.1.29
 
 ## 0.1.28
 

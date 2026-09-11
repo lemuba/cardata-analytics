@@ -29,13 +29,13 @@ from .const import (
 )
 from .controller import GlobalRangeController
 from .runtime import VehicleRuntime
-from .poi import async_register_websocket
+from .poi import async_register_websocket, async_warm_charging_sources
 
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.29.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.29"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.30.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.30"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
@@ -118,6 +118,9 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     # POI network access runs server-side through Home Assistant so Lovelace
     # browsers and Companion WebViews do not depend on third-party CORS.
     async_register_websocket(hass)
+    # Warm the persistent bulk charging datasets in the background.  This never
+    # blocks Home Assistant startup or the analytics/ledger runtime.
+    hass.async_create_task(async_warm_charging_sources(hass))
 
     frontend_path = Path(__file__).parent / "frontend"
     await hass.http.async_register_static_paths(

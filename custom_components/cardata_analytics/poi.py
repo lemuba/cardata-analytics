@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import gzip
+import hashlib
+import html
+import io
 import json
 import logging
 import math
 import re
 import time
+from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 import voluptuous as vol
 
@@ -27,6 +34,8 @@ DATA_POI_SEMAPHORE = "poi_semaphore"
 DATA_POI_LAST_REQUEST = "poi_last_request"
 DATA_POI_ENDPOINT_HEALTH = "poi_endpoint_health"
 DATA_POI_PREFERRED_ENDPOINT = "poi_preferred_endpoint"
+DATA_CHARGING_DATASETS = "charging_datasets"
+DATA_CHARGING_LOAD_TASKS = "charging_load_tasks"
 
 POI_CACHE_TTL_SECONDS = 15 * 60
 POI_MIN_REQUEST_INTERVAL_SECONDS = 0.75
@@ -44,17 +53,30 @@ OVERPASS_ENDPOINTS = (
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 )
 
-# QLever's public OSM-Planet endpoint is independent from Overpass and is used
-# as a charging-specific fallback/augmenter for targeted EV searches.
-QLEVER_OSM_ENDPOINT = "https://qlever.dev/api/osm-planet"
-
-# Public ArcGIS endpoint behind the Bundesnetzagentur charging-station map. It
-# is only used for charging stations and only when the requested circle overlaps
-# Germany. BNetzA data is CC BY 4.0; attribution is surfaced in the card.
-BNETZA_ARCGIS_ENDPOINT = (
-    "https://services6.arcgis.com/6jU7RmJig2Wwo1b0/ArcGIS/rest/services/"
-    "Ladesaeulenregister/FeatureServer/7/query"
+# Charging infrastructure is deliberately bulk-cached locally.  The map's
+# charging search therefore does not depend on a public query service for every
+# radius/filter change.  Eco-Movement publishes AFIR/DATEX-II data through the
+# German national access point (Mobilithek).  Bundesnetzagentur publishes a
+# monthly CC-BY CSV which is normalized and stored locally as a fallback.
+AFIR_ECOMOVEMENT_PUBLICATION_ID = "954064102947180544"
+AFIR_ECOMOVEMENT_URL = (
+    "https://mobilithek.info/mdp-api/mdp-conn-server/v1/publication/"
+    f"{AFIR_ECOMOVEMENT_PUBLICATION_ID}/file/noauth"
 )
+BNETZA_PAGE_URL = (
+    "https://www.bundesnetzagentur.de/DE/Fachthemen/ElektrizitaetundGas/"
+    "E-Mobilitaet/Ladesaeulenkarte/start.html"
+)
+# Safe initial fallback for the current release.  Normal operation discovers the
+# newest CSV link from the BNetzA page before downloading.
+BNETZA_FALLBACK_CSV_URL = (
+    "https://data.bundesnetzagentur.de/Bundesnetzagentur/DE/Fachthemen/"
+    "ElektrizitaetundGas/E-Mobilitaet/Ladesaeulenregister_BNetzA_2026-07-28.csv"
+)
+CHARGING_DATASET_CACHE_VERSION = 1
+CHARGING_AFIR_TTL_SECONDS = 6 * 60 * 60
+CHARGING_BNETZA_TTL_SECONDS = 7 * 24 * 60 * 60
+CHARGING_MAX_STALE_SECONDS = 45 * 24 * 60 * 60
 
 POI_CLAUSES: dict[str, tuple[str, ...]] = {
     "charging": ('["amenity"="charging_station"]',),
@@ -174,6 +196,8 @@ def _cache_key(msg: dict[str, Any]) -> tuple[Any, ...]:
         str(msg.get("search_filter", "")).strip().lower(),
         str(msg.get("operator_filter", "")).strip().lower(),
         str(msg.get("connector_filter", "any")),
+        int(msg.get("min_power_kw", 0)),
+        bool(msg.get("include_unknown_power", True)),
     )
 
 
@@ -251,7 +275,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.29 "
+                            "Cardata Analytics/0.1.30 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -436,342 +460,760 @@ def _aggregate_osm_charging(
     return others + stations + promoted
 
 
-def _sparql_regex_literal(value: str) -> str:
-    return re.escape(value.strip()[:80]).replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _build_qlever_charging_query(msg: dict[str, Any]) -> str:
-    lat = float(msg["latitude"])
-    lon = float(msg["longitude"])
-    radius_m = int(msg["radius_km"]) * 1000
-    search = _sparql_regex_literal(str(msg.get("search_filter", "")))
-    operator = _sparql_regex_literal(str(msg.get("operator_filter", "")))
-    limit = min(2500, max(300, int(msg["max_results"]) * 3))
-
-    optional = {
-        "name": "name",
-        "brand": "brand",
-        "operator": "operator",
-        "network": "network",
-        "capacity": "capacity",
-        "opening_hours": "opening_hours",
-        "access": "access",
-        "fee": "fee",
-        "addr_street": "addr:street",
-        "addr_housenumber": "addr:housenumber",
-        "addr_postcode": "addr:postcode",
-        "addr_city": "addr:city",
-        "socket_ccs": "socket:ccs",
-        "socket_ccs_output": "socket:ccs:output",
-        "socket_type2_combo": "socket:type2_combo",
-        "socket_type2_combo_output": "socket:type2_combo:output",
-        "socket_type2": "socket:type2",
-        "socket_type2_output": "socket:type2:output",
-        "socket_chademo": "socket:chademo",
-        "socket_chademo_output": "socket:chademo:output",
-        "socket_tesla_supercharger": "socket:tesla_supercharger",
-        "socket_tesla_supercharger_output": "socket:tesla_supercharger:output",
-        "socket_tesla_destination": "socket:tesla_destination",
-        "socket_tesla_destination_output": "socket:tesla_destination:output",
-        "charging_station_output": "charging_station:output",
-        "max_power": "max_power",
-        "evse_ref": "ref:EU:EVSE",
-    }
-    optionals = " ".join(
-        f'OPTIONAL {{ ?osm <https://www.openstreetmap.org/wiki/Key:{key}> ?{var} . }}'
-        for var, key in optional.items()
+def _dataset_cache_path(hass: HomeAssistant, provider: str) -> Path:
+    return Path(
+        hass.config.path(
+            ".storage",
+            f"{DOMAIN}_charging_{provider}_v{CHARGING_DATASET_CACHE_VERSION}.json.gz",
+        )
     )
-    select_vars = " ".join(f"?{var}" for var in optional)
-    text_parts = "CONCAT(" + ", ' ', ".join(
-        [
-            'COALESCE(STR(?name), "")',
-            'COALESCE(STR(?brand), "")',
-            'COALESCE(STR(?operator), "")',
-            'COALESCE(STR(?network), "")',
-        ]
-    ) + ")"
-    filters = []
-    if search:
-        filters.append(f'FILTER(REGEX({text_parts}, "{search}", "i"))')
-    if operator:
-        filters.append(f'FILTER(REGEX({text_parts}, "{operator}", "i"))')
-
-    return f"""
-PREFIX osmkey: <https://www.openstreetmap.org/wiki/Key:>
-PREFIX geo: <http://www.opengis.net/ont/geosparql#>
-PREFIX geof: <http://www.opengis.net/def/function/geosparql/>
-SELECT DISTINCT ?osm ?loc ?kind {select_vars} WHERE {{
-  {{ ?osm osmkey:amenity "charging_station" . BIND("station" AS ?kind) }}
-  UNION
-  {{ ?osm osmkey:man_made "charge_point" . BIND("charge_point" AS ?kind) }}
-  ?osm geo:hasCentroid/geo:asWKT ?loc .
-  BIND("POINT({lon:.6f} {lat:.6f})"^^geo:wktLiteral AS ?center)
-  FILTER(geof:metricDistance(?loc, ?center) <= {radius_m})
-  {optionals}
-  {' '.join(filters)}
-}}
-LIMIT {limit}
-""".strip()
 
 
-def _binding_value(binding: dict[str, Any], key: str) -> str | None:
-    value = binding.get(key)
+def _read_dataset_cache(path: Path) -> dict[str, Any] | None:
+    try:
+        if not path.exists():
+            return None
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, dict) or not isinstance(payload.get("elements"), list):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _write_dataset_cache(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=5) as handle:
+        json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+    tmp.replace(path)
+
+
+def _stable_provider_id(provider: str, *parts: Any) -> str:
+    raw = "|".join(str(part or "") for part in parts).encode("utf-8", "ignore")
+    return f"{provider}-{hashlib.blake2s(raw, digest_size=10).hexdigest()}"
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _multi_text(value: Any) -> str:
+    """Return the first useful human-readable value from DATEX multilingual data."""
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float)):
+        return str(value).strip()
+    if isinstance(value, list):
+        for item in value:
+            text = _multi_text(item)
+            if text:
+                return text
+        return ""
     if isinstance(value, dict):
-        raw = value.get("value")
-        return str(raw) if raw is not None else None
+        values = value.get("values")
+        if isinstance(values, list):
+            for item in values:
+                if isinstance(item, dict) and item.get("value") not in (None, ""):
+                    return str(item["value"]).strip()
+        direct = value.get("value")
+        if isinstance(direct, (str, int, float)) and str(direct).strip():
+            return str(direct).strip()
+        for key in ("name", "text", "label", "description"):
+            if key in value:
+                text = _multi_text(value[key])
+                if text:
+                    return text
+    return ""
+
+
+def _recursive_named_value(value: Any, wanted_keys: tuple[str, ...]) -> str:
+    if isinstance(value, dict):
+        for key in wanted_keys:
+            if key in value:
+                text = _multi_text(value[key])
+                if text:
+                    return text
+        for child in value.values():
+            text = _recursive_named_value(child, wanted_keys)
+            if text:
+                return text
+    elif isinstance(value, list):
+        for child in value:
+            text = _recursive_named_value(child, wanted_keys)
+            if text:
+                return text
+    return ""
+
+
+def _afir_coordinates(site: dict[str, Any]) -> tuple[float, float] | None:
+    def _walk(value: Any) -> tuple[float, float] | None:
+        if isinstance(value, dict):
+            if "latitude" in value and "longitude" in value:
+                try:
+                    lat = float(value["latitude"])
+                    lon = float(value["longitude"])
+                    if -90 <= lat <= 90 and -180 <= lon <= 180:
+                        return lat, lon
+                except (TypeError, ValueError):
+                    pass
+            # Prefer actual display coordinates before traversing arbitrary branches.
+            display = value.get("coordinatesForDisplay")
+            if isinstance(display, dict):
+                found = _walk(display)
+                if found:
+                    return found
+            for child in value.values():
+                found = _walk(child)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = _walk(child)
+                if found:
+                    return found
+        return None
+
+    return _walk(site.get("locationReference") or site)
+
+
+def _afir_address(site: dict[str, Any]) -> dict[str, str]:
+    address: dict[str, Any] | None = None
+
+    def _find(value: Any) -> None:
+        nonlocal address
+        if address is not None:
+            return
+        if isinstance(value, dict):
+            candidate = value.get("address")
+            if isinstance(candidate, dict):
+                address = candidate
+                return
+            for child in value.values():
+                _find(child)
+        elif isinstance(value, list):
+            for child in value:
+                _find(child)
+
+    _find(site.get("locationReference") or site)
+    if not address:
+        return {}
+    city = _multi_text(address.get("city"))
+    postcode = str(address.get("postcode") or "").strip()
+    country = str(address.get("countryCode") or "").strip()
+    lines: list[str] = []
+    for line in _as_list(address.get("addressLine")):
+        if isinstance(line, dict):
+            text = _multi_text(line.get("text"))
+            if text:
+                lines.append(text)
+    out: dict[str, str] = {}
+    if lines:
+        out["addr:street"] = lines[0]
+        if len(lines) > 1:
+            out["addr:full"] = ", ".join(lines)
+    if postcode:
+        out["addr:postcode"] = postcode
+    if city:
+        out["addr:city"] = city
+    if country:
+        out["addr:country"] = country
+    return out
+
+
+def _connector_key_from_text(value: Any) -> str | None:
+    text = re.sub(r"[^a-z0-9]+", "", _multi_text(value).lower())
+    if not text:
+        return None
+    if "chademo" in text:
+        return "socket:chademo"
+    if "combo" in text or "ccs" in text or "type2combo" in text:
+        return "socket:type2_combo"
+    if "tesla" in text:
+        return "socket:tesla_supercharger"
+    if "type2" in text or "iec62196" in text:
+        return "socket:type2"
     return None
 
 
-def _parse_wkt_point(value: str | None) -> tuple[float, float] | None:
-    if not value:
+def _power_kw_from_watts(value: Any) -> float | None:
+    try:
+        power = float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
         return None
-    match = re.search(
-        r"POINT\s*(?:Z\s*)?\(\s*([-+0-9.eE]+)\s+([-+0-9.eE]+)", value, flags=re.I
-    )
-    if not match:
+    if power <= 0:
         return None
-    lon = float(match.group(1))
-    lat = float(match.group(2))
-    return lat, lon
+    # DATEX maxPowerAtSocket / totalMaximumPower are specified in watts.  Keep
+    # compatibility with feeds that already serialize a small kW value.
+    return power / 1000.0 if power > 1000 else power
 
 
-async def _async_fetch_qlever_charging(
-    hass: HomeAssistant, msg: dict[str, Any]
-) -> tuple[list[dict[str, Any]], str]:
-    session = async_get_clientsession(hass)
-    query = _build_qlever_charging_query(msg)
-    timeout = min(18.0, max(8.0, int(msg["timeout_seconds"]) / 2))
-    async with asyncio.timeout(timeout):
-        async with session.post(
-            QLEVER_OSM_ENDPOINT,
-            data=query.encode("utf-8"),
-            headers={
-                "Accept": "application/sparql-results+json",
-                "Content-Type": "application/sparql-query; charset=utf-8",
-                "User-Agent": (
-                    "Cardata Analytics/0.1.29 "
-                    "(https://github.com/lemuba/cardata-analytics)"
-                ),
-            },
-        ) as response:
-            if response.status != 200:
-                body = (await response.text())[:180].replace("\n", " ").strip()
-                raise RuntimeError(f"QLever: HTTP {response.status}" + (f" ({body})" if body else ""))
-            payload = await response.json(content_type=None)
+def _parse_afir_payload(payload: Any) -> list[dict[str, Any]]:
+    root = payload.get("payload", payload) if isinstance(payload, dict) else {}
+    publication = None
+    if isinstance(root, dict):
+        for key in (
+            "aegiEnergyInfrastructureTablePublication",
+            "energyInfrastructureTablePublication",
+        ):
+            if isinstance(root.get(key), dict):
+                publication = root[key]
+                break
+        if publication is None:
+            for key, value in root.items():
+                if key.lower().endswith("energyinfrastructuretablepublication") and isinstance(value, dict):
+                    publication = value
+                    break
+    if not isinstance(publication, dict):
+        raise ValueError("AFIR: EnergyInfrastructureTablePublication fehlt")
 
-    bindings = ((payload or {}).get("results") or {}).get("bindings")
-    if not isinstance(bindings, list):
-        raise RuntimeError("QLever: ungültige SPARQL-JSON-Antwort")
-
-    tag_mapping = {
-        "name": "name", "brand": "brand", "operator": "operator", "network": "network",
-        "capacity": "capacity", "opening_hours": "opening_hours", "access": "access",
-        "fee": "fee", "addr_street": "addr:street", "addr_housenumber": "addr:housenumber",
-        "addr_postcode": "addr:postcode", "addr_city": "addr:city", "socket_ccs": "socket:ccs",
-        "socket_ccs_output": "socket:ccs:output", "socket_type2_combo": "socket:type2_combo",
-        "socket_type2_combo_output": "socket:type2_combo:output", "socket_type2": "socket:type2",
-        "socket_type2_output": "socket:type2:output", "socket_chademo": "socket:chademo",
-        "socket_chademo_output": "socket:chademo:output",
-        "socket_tesla_supercharger": "socket:tesla_supercharger",
-        "socket_tesla_supercharger_output": "socket:tesla_supercharger:output",
-        "socket_tesla_destination": "socket:tesla_destination",
-        "socket_tesla_destination_output": "socket:tesla_destination:output",
-        "charging_station_output": "charging_station:output", "max_power": "max_power",
-        "evse_ref": "ref:EU:EVSE",
-    }
-    elements: list[dict[str, Any]] = []
-    for binding in bindings:
-        if not isinstance(binding, dict):
+    result: list[dict[str, Any]] = []
+    tables = _as_list(publication.get("energyInfrastructureTable"))
+    for table in tables:
+        if not isinstance(table, dict):
             continue
-        subject = _binding_value(binding, "osm") or ""
-        id_match = re.search(r"openstreetmap\.org/(node|way|relation)/(\d+)", subject)
-        coords = _parse_wkt_point(_binding_value(binding, "loc"))
-        if not id_match or coords is None:
+        for site in _as_list(table.get("energyInfrastructureSite")):
+            if not isinstance(site, dict):
+                continue
+            coords = _afir_coordinates(site)
+            if coords is None:
+                continue
+            operator = _recursive_named_value(site.get("operator"), ("name",))
+            owner = _recursive_named_value(site.get("owner"), ("name",))
+            name = _multi_text(site.get("name")) or operator or owner or "Ladestation"
+            tags: dict[str, Any] = {
+                "amenity": "charging_station",
+                "name": name,
+                "operator": operator or owner or None,
+                "brand": operator or None,
+                "source": "Mobilithek / Eco-Movement (AFIR)",
+                "cardata:provider": "afir",
+            }
+            tags.update(_afir_address(site))
+
+            capacity = 0
+            max_power_kw: float | None = None
+            socket_counts: dict[str, int] = {}
+            socket_power: dict[str, float] = {}
+            evse_ids: list[str] = []
+            stations = _as_list(site.get("energyInfrastructureStation"))
+            for station in stations:
+                if not isinstance(station, dict):
+                    continue
+                station_power = _power_kw_from_watts(station.get("totalMaximumPower"))
+                if station_power is not None:
+                    max_power_kw = max(max_power_kw or 0.0, station_power)
+                try:
+                    capacity += max(0, int(station.get("numberOfRefillPoints") or 0))
+                except (TypeError, ValueError):
+                    pass
+                refill_points = _as_list(station.get("refillPoint"))
+                if not station.get("numberOfRefillPoints"):
+                    capacity += len(refill_points)
+                for refill in refill_points:
+                    if not isinstance(refill, dict):
+                        continue
+                    cp = None
+                    for key, value in refill.items():
+                        if key.lower().endswith("electricchargingpoint") and isinstance(value, dict):
+                            cp = value
+                            break
+                    if not isinstance(cp, dict):
+                        continue
+                    for external in _as_list(cp.get("externalIdentifier")):
+                        if isinstance(external, dict):
+                            ident = str(external.get("identifier") or "").strip()
+                            if ident:
+                                evse_ids.append(ident)
+                    for connector in _as_list(cp.get("connector")):
+                        if not isinstance(connector, dict):
+                            continue
+                        socket_key = _connector_key_from_text(connector.get("connectorType"))
+                        power = _power_kw_from_watts(connector.get("maxPowerAtSocket"))
+                        if power is not None:
+                            max_power_kw = max(max_power_kw or 0.0, power)
+                        if socket_key:
+                            socket_counts[socket_key] = socket_counts.get(socket_key, 0) + 1
+                            if power is not None:
+                                socket_power[socket_key] = max(socket_power.get(socket_key, 0.0), power)
+
+            if capacity:
+                tags["capacity"] = str(capacity)
+            for socket_key, count in socket_counts.items():
+                tags[socket_key] = str(count)
+                if socket_power.get(socket_key):
+                    tags[f"{socket_key}:output"] = f"{socket_power[socket_key]:g} kW"
+            if max_power_kw:
+                tags["charging_station:output"] = f"{max_power_kw:g} kW"
+            if evse_ids:
+                deduped = list(dict.fromkeys(evse_ids))
+                tags["ref:EU:EVSE"] = ";".join(deduped[:40])
+            identity = " ".join([name, operator, owner, " ".join(evse_ids)]).lower()
+            if "ionity" in identity or re.search(r"(?:^|[^a-z0-9])de[*_-]?ioy", identity, re.I):
+                tags["network"] = "IONITY"
+                if not tags.get("brand"):
+                    tags["brand"] = "IONITY"
+
+            site_id = str(site.get("idG") or site.get("id") or "")
+            result.append(
+                {
+                    "type": "afir",
+                    "id": site_id or _stable_provider_id("afir", coords[0], coords[1], name, operator),
+                    "lat": coords[0],
+                    "lon": coords[1],
+                    "tags": {k: v for k, v in tags.items() if v not in (None, "")},
+                    "provider": "afir",
+                }
+            )
+    if not result:
+        raise ValueError("AFIR: keine verwertbaren Ladeorte im Datensatz")
+    return result
+
+
+def _parse_decimal_de(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip().replace(" ", "").replace(".", "").replace(",", ".")
+    # Values already using a dot as the decimal separator should not lose it.
+    raw = str(value).strip()
+    if "," not in raw and raw.count(".") == 1:
+        text = raw
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _norm_header(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower().replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss"))
+
+
+def _row_value(row: dict[str, Any], *aliases: str) -> str:
+    normalized = {_norm_header(str(key)): value for key, value in row.items()}
+    for alias in aliases:
+        value = normalized.get(_norm_header(alias))
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _bnetza_socket_from_text(text: str) -> str | None:
+    low = text.lower()
+    if "chademo" in low:
+        return "socket:chademo"
+    if "combo" in low or "ccs" in low:
+        return "socket:type2_combo"
+    if "tesla" in low:
+        return "socket:tesla_supercharger"
+    if "typ 2" in low or "type 2" in low:
+        return "socket:type2"
+    return None
+
+
+def _parse_bnetza_csv(content: bytes) -> list[dict[str, Any]]:
+    text = None
+    for encoding in ("utf-8-sig", "utf-8", "cp1252"):
+        try:
+            text = content.decode(encoding)
+            break
+        except UnicodeDecodeError:
             continue
-        tags: dict[str, Any] = {}
-        kind = _binding_value(binding, "kind")
-        if kind == "charge_point":
-            tags["man_made"] = "charge_point"
-        else:
-            tags["amenity"] = "charging_station"
-        for variable, tag_key in tag_mapping.items():
-            value = _binding_value(binding, variable)
-            if value not in (None, ""):
-                tags[tag_key] = value
-        elements.append(
+    if text is None:
+        raise ValueError("Bundesnetzagentur: CSV-Zeichensatz unbekannt")
+    reader = csv.DictReader(io.StringIO(text), delimiter=";")
+    result: list[dict[str, Any]] = []
+    for row in reader:
+        if not isinstance(row, dict):
+            continue
+        lat = _parse_decimal_de(_row_value(row, "Breitengrad"))
+        lon = _parse_decimal_de(_row_value(row, "Längengrad", "Langengrad"))
+        if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        operator = _row_value(row, "Betreiber")
+        display = _row_value(row, "Anzeigename (Karte)", "Standortbezeichnung")
+        name = display or operator or "Ladestation"
+        street = _row_value(row, "Straße", "Strasse")
+        housenumber = _row_value(row, "Hausnummer")
+        postcode = _row_value(row, "Postleitzahl")
+        city = _row_value(row, "Ort")
+        tags: dict[str, Any] = {
+            "amenity": "charging_station",
+            "name": name,
+            "operator": operator or None,
+            "brand": operator or None,
+            "addr:street": street or None,
+            "addr:housenumber": housenumber or None,
+            "addr:postcode": postcode or None,
+            "addr:city": city or None,
+            "opening_hours": _row_value(row, "Öffnungszeiten", "Offnungszeiten") or None,
+            "source": "bundesnetzagentur.de",
+            "cardata:provider": "bnetza",
+        }
+        capacity_text = _row_value(row, "Anzahl Ladepunkte")
+        if capacity_text:
+            tags["capacity"] = capacity_text
+        max_power_kw = _parse_decimal_de(
+            _row_value(row, "Nennleistung Ladeeinrichtung [kW]", "Anschlussleistung")
+        )
+        evse_ids: list[str] = []
+        socket_counts: dict[str, int] = {}
+        socket_power: dict[str, float] = {}
+        for index in range(1, 13):
+            connector_text = _row_value(row, f"Steckertypen{index}")
+            power = _parse_decimal_de(
+                _row_value(row, f"Nennleistung Stecker{index}", f"P{index} [kW]")
+            )
+            evse = _row_value(row, f"EVSE-ID{index}")
+            if evse:
+                evse_ids.append(evse)
+            socket_key = _bnetza_socket_from_text(connector_text)
+            if socket_key:
+                socket_counts[socket_key] = socket_counts.get(socket_key, 0) + 1
+                if power is not None:
+                    socket_power[socket_key] = max(socket_power.get(socket_key, 0.0), power)
+            if power is not None:
+                max_power_kw = max(max_power_kw or 0.0, power)
+        for socket_key, count in socket_counts.items():
+            tags[socket_key] = str(count)
+            if socket_power.get(socket_key):
+                tags[f"{socket_key}:output"] = f"{socket_power[socket_key]:g} kW"
+        if max_power_kw:
+            tags["charging_station:output"] = f"{max_power_kw:g} kW"
+        if evse_ids:
+            tags["ref:EU:EVSE"] = ";".join(dict.fromkeys(evse_ids))
+        identity = " ".join([name, operator, " ".join(evse_ids)]).lower()
+        if "ionity" in identity or re.search(r"(?:^|[^a-z0-9])de[*_-]?ioy", identity, re.I):
+            tags["network"] = "IONITY"
+            if not tags.get("brand"):
+                tags["brand"] = "IONITY"
+        station_id = _row_value(row, "Ladeeinrichtungs-ID")
+        result.append(
             {
-                "type": id_match.group(1),
-                "id": int(id_match.group(2)),
-                "lat": coords[0],
-                "lon": coords[1],
-                "tags": tags,
-                "provider": "qlever",
+                "type": "bnetza",
+                "id": station_id or _stable_provider_id("bnetza", lat, lon, name, operator),
+                "lat": lat,
+                "lon": lon,
+                "tags": {k: v for k, v in tags.items() if v not in (None, "")},
+                "provider": "bnetza",
             }
         )
-    return _aggregate_osm_charging(elements, "qlever"), QLEVER_OSM_ENDPOINT
+    if not result:
+        raise ValueError("Bundesnetzagentur: keine verwertbaren Zeilen in CSV")
+    return result
 
 
-def _request_overlaps_germany(latitude: float, longitude: float, radius_km: int) -> bool:
-    lat_margin = radius_km / 111.0
-    lon_margin = radius_km / max(25.0, 111.0 * math.cos(math.radians(latitude)))
-    return not (
-        latitude + lat_margin < 47.0
-        or latitude - lat_margin > 55.7
-        or longitude + lon_margin < 5.0
-        or longitude - lon_margin > 15.6
-    )
+async def _async_load_disk_dataset(hass: HomeAssistant, provider: str) -> dict[str, Any]:
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    datasets: dict[str, dict[str, Any]] = domain_data.setdefault(DATA_CHARGING_DATASETS, {})
+    if provider in datasets:
+        return datasets[provider]
+    payload = await hass.async_add_executor_job(_read_dataset_cache, _dataset_cache_path(hass, provider))
+    if not payload:
+        payload = {"provider": provider, "elements": [], "fetched_at": 0.0, "source_url": ""}
+    datasets[provider] = payload
+    return payload
 
 
-def _arcgis_text_where(search_filter: str, operator_filter: str) -> str:
-    groups: list[str] = []
-    for text, fields in (
-        (operator_filter.strip()[:80], ["Betreiber_", "für_die_Überschrift_"]),
-        (search_filter.strip()[:80], ["Betreiber_", "für_die_Überschrift_", "Standort_"]),
-    ):
-        if not text:
-            continue
-        escaped = text.replace("'", "''")
-        groups.append("(" + " OR ".join(f"{field} LIKE '%{escaped}%'" for field in fields) + ")")
-    return " AND ".join(groups) if groups else "1=1"
-
-
-def _bnetza_feature_to_element(feature: dict[str, Any]) -> dict[str, Any] | None:
-    attrs = feature.get("attributes") or {}
-    geometry = feature.get("geometry") or {}
-    try:
-        lat = float(geometry.get("y", attrs.get("Breitengrad_")))
-        lon = float(geometry.get("x", attrs.get("Längengrad_")))
-    except (TypeError, ValueError):
-        return None
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        return None
-
-    operator = str(attrs.get("Betreiber_") or "").strip()
-    title = str(attrs.get("für_die_Überschrift_") or operator or "Ladestation").strip()
-    address = str(attrs.get("Standort_") or "").strip()
-    tags: dict[str, Any] = {
-        "amenity": "charging_station",
-        "name": title,
-        "operator": operator or None,
-        "brand": operator or None,
-        "addr:full": address or None,
-        "source": "Bundesnetzagentur.de",
-        "cardata:provider": "bnetza",
-    }
-    capacity = attrs.get("Anzahl_Ladepunkte_")
-    if capacity not in (None, ""):
-        tags["capacity"] = str(capacity)
-
-    max_power: float | None = None
-    socket_counts = {"socket:type2_combo": 0, "socket:type2": 0, "socket:chademo": 0}
-    for index in range(1, 5):
-        suffix = f"__{index}_"
-        if _truthy_tag(attrs.get(f"DC_Kupplung_Combo{suffix}")):
-            socket_counts["socket:type2_combo"] += 1
-        if _truthy_tag(attrs.get(f"AC_Kupplung_Typ_2{suffix}")) or _truthy_tag(
-            attrs.get(f"AC_Steckdose_Typ_2{suffix}")
-        ):
-            socket_counts["socket:type2"] += 1
-        if _truthy_tag(attrs.get(f"DC_CHAdeMO{suffix}")):
-            socket_counts["socket:chademo"] += 1
-        power = _parse_power_kw(attrs.get(f"Nennleistung_Ladepunkt_{index}_"))
-        if power is not None and (max_power is None or power > max_power):
-            max_power = power
-
-    for socket_key, count in socket_counts.items():
-        if count:
-            tags[socket_key] = str(count)
-    if max_power is not None:
-        tags["max_power"] = f"{max_power:g} kW"
-
-    # IONITY commonly appears only as the operator in registry data.
-    if "ionity" in operator.lower() or "ionity" in title.lower():
-        tags["network"] = "IONITY"
-
-    clean_tags = {key: value for key, value in tags.items() if value not in (None, "")}
-    object_id = attrs.get("OBJECTID", attrs.get("ID", 0))
-    try:
-        object_id = int(object_id)
-    except (TypeError, ValueError):
-        object_id = abs(hash((round(lat, 6), round(lon, 6), title))) % 2_000_000_000
-    return {
-        "type": "bnetza",
-        "id": object_id,
-        "lat": lat,
-        "lon": lon,
-        "tags": clean_tags,
-        "provider": "bnetza",
-    }
-
-
-async def _async_fetch_bnetza_charging(
-    hass: HomeAssistant, msg: dict[str, Any]
-) -> tuple[list[dict[str, Any]], str]:
-    latitude = float(msg["latitude"])
-    longitude = float(msg["longitude"])
-    radius_km = int(msg["radius_km"])
-    if not _request_overlaps_germany(latitude, longitude, radius_km):
-        return [], ""
-
+async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
     session = async_get_clientsession(hass)
-    geometry = json.dumps(
-        {"x": longitude, "y": latitude, "spatialReference": {"wkid": 4326}},
-        separators=(",", ":"),
-    )
-    where = _arcgis_text_where(
-        str(msg.get("search_filter", "")), str(msg.get("operator_filter", ""))
-    )
-    max_rows = min(4000, max(1000, int(msg["max_results"]) * 4))
-    page_size = 1000
-    offset = 0
-    elements: list[dict[str, Any]] = []
-    deadline = time.monotonic() + min(15.0, max(8.0, int(msg["timeout_seconds"]) / 2))
+    async with asyncio.timeout(35.0):
+        async with session.get(
+            AFIR_ECOMOVEMENT_URL,
+            headers={
+                "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
+                "Accept-Encoding": "gzip",
+                "User-Agent": "Cardata Analytics/0.1.30 (https://github.com/lemuba/cardata-analytics)",
+            },
+            allow_redirects=True,
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Mobilithek AFIR: HTTP {response.status}")
+            body = await response.read()
+    if body[:2] == b"\x1f\x8b":
+        body = gzip.decompress(body)
+    try:
+        payload = json.loads(body.decode("utf-8-sig"))
+    except Exception as err:
+        raise RuntimeError("Mobilithek AFIR: Antwort ist kein gültiges JSON") from err
+    elements = await hass.async_add_executor_job(_parse_afir_payload, payload)
+    dataset = {
+        "provider": "afir",
+        "elements": elements,
+        "fetched_at": time.time(),
+        "source_url": AFIR_ECOMOVEMENT_URL,
+    }
+    await hass.async_add_executor_job(_write_dataset_cache, _dataset_cache_path(hass, "afir"), dataset)
+    hass.data.setdefault(DOMAIN, {}).setdefault(DATA_CHARGING_DATASETS, {})["afir"] = dataset
+    return dataset
 
-    while offset < max_rows:
-        remaining = deadline - time.monotonic()
-        if remaining <= 1.0:
-            break
-        params = {
-            "where": where,
-            "geometry": geometry,
-            "geometryType": "esriGeometryPoint",
-            "inSR": "4326",
-            "outSR": "4326",
-            "spatialRel": "esriSpatialRelIntersects",
-            "distance": str(radius_km),
-            "units": "esriSRUnit_Kilometer",
-            "outFields": "*",
-            "returnGeometry": "true",
-            "resultOffset": str(offset),
-            "resultRecordCount": str(min(page_size, max_rows - offset)),
-            "f": "json",
-        }
-        async with asyncio.timeout(min(7.0, remaining)):
+
+async def _async_discover_bnetza_csv_url(hass: HomeAssistant) -> str:
+    session = async_get_clientsession(hass)
+    try:
+        async with asyncio.timeout(15.0):
             async with session.get(
-                BNETZA_ARCGIS_ENDPOINT,
-                params=params,
-                headers={"User-Agent": "Cardata Analytics/0.1.29"},
+                BNETZA_PAGE_URL,
+                headers={"User-Agent": "Cardata Analytics/0.1.30"},
             ) as response:
                 if response.status != 200:
-                    raise RuntimeError(f"Bundesnetzagentur: HTTP {response.status}")
-                payload = await response.json(content_type=None)
-        if not isinstance(payload, dict):
-            raise RuntimeError("Bundesnetzagentur: ungültige JSON-Antwort")
-        if payload.get("error"):
-            message = (payload.get("error") or {}).get("message") or "ArcGIS-Abfrage fehlgeschlagen"
-            raise RuntimeError(f"Bundesnetzagentur: {message}")
-        features = payload.get("features")
-        if not isinstance(features, list):
-            raise RuntimeError("Bundesnetzagentur: keine Feature-Liste in Antwort")
-        for feature in features:
-            if isinstance(feature, dict):
-                element = _bnetza_feature_to_element(feature)
-                if element is not None:
-                    elements.append(element)
-        if len(features) < page_size or not payload.get("exceededTransferLimit"):
-            break
-        offset += len(features)
-    return elements, BNETZA_ARCGIS_ENDPOINT
+                    raise RuntimeError(f"HTTP {response.status}")
+                page = await response.text(errors="replace")
+        candidates = re.findall(
+            r"href=[\"']([^\"']*Ladesaeulenregister_BNetzA_[^\"']+\\.csv)[\"']",
+            page,
+            flags=re.I,
+        )
+        if candidates:
+            return urljoin(BNETZA_PAGE_URL, html.unescape(candidates[-1]))
+    except Exception as err:
+        _LOGGER.debug("BNetzA CSV discovery failed, using release fallback: %s", err)
+    return BNETZA_FALLBACK_CSV_URL
+
+
+async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
+    url = await _async_discover_bnetza_csv_url(hass)
+    session = async_get_clientsession(hass)
+    async with asyncio.timeout(75.0):
+        async with session.get(
+            url,
+            headers={"Accept": "text/csv, application/octet-stream;q=0.8, */*;q=0.5", "User-Agent": "Cardata Analytics/0.1.30"},
+            allow_redirects=True,
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Bundesnetzagentur CSV: HTTP {response.status}")
+            body = await response.read()
+    elements = await hass.async_add_executor_job(_parse_bnetza_csv, body)
+    dataset = {
+        "provider": "bnetza",
+        "elements": elements,
+        "fetched_at": time.time(),
+        "source_url": url,
+    }
+    await hass.async_add_executor_job(_write_dataset_cache, _dataset_cache_path(hass, "bnetza"), dataset)
+    hass.data.setdefault(DOMAIN, {}).setdefault(DATA_CHARGING_DATASETS, {})["bnetza"] = dataset
+    return dataset
+
+
+async def _async_start_dataset_refresh(hass: HomeAssistant, provider: str) -> asyncio.Task[dict[str, Any]]:
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    tasks: dict[str, asyncio.Task[dict[str, Any]]] = domain_data.setdefault(DATA_CHARGING_LOAD_TASKS, {})
+    task = tasks.get(provider)
+    if task is not None and not task.done():
+        return task
+    refresh = _async_refresh_afir_dataset if provider == "afir" else _async_refresh_bnetza_dataset
+    task = hass.async_create_task(refresh(hass))
+    tasks[provider] = task
+
+    def _cleanup(done: asyncio.Task[dict[str, Any]]) -> None:
+        if tasks.get(provider) is done:
+            tasks.pop(provider, None)
+        if not done.cancelled():
+            try:
+                done.exception()
+            except Exception:
+                pass
+
+    task.add_done_callback(_cleanup)
+    return task
+
+
+async def _async_get_charging_dataset(
+    hass: HomeAssistant,
+    provider: str,
+    *,
+    wait_if_empty: bool,
+    refresh_if_stale: bool = True,
+) -> tuple[dict[str, Any], list[str]]:
+    dataset = await _async_load_disk_dataset(hass, provider)
+    elements = dataset.get("elements") if isinstance(dataset, dict) else []
+    fetched_at = float(dataset.get("fetched_at", 0.0)) if isinstance(dataset, dict) else 0.0
+    age = max(0.0, time.time() - fetched_at) if fetched_at else float("inf")
+    ttl = CHARGING_AFIR_TTL_SECONDS if provider == "afir" else CHARGING_BNETZA_TTL_SECONDS
+    warnings: list[str] = []
+    task: asyncio.Task[dict[str, Any]] | None = None
+
+    if refresh_if_stale and age > ttl:
+        task = await _async_start_dataset_refresh(hass, provider)
+
+    if elements:
+        if age > ttl:
+            warnings.append(
+                f"{provider.upper()}: lokaler Cache wird im Hintergrund aktualisiert"
+            )
+        return dataset, warnings
+
+    if task is None:
+        task = await _async_start_dataset_refresh(hass, provider)
+    if not wait_if_empty:
+        warnings.append(f"{provider.upper()}: lokaler Cache wird aufgebaut")
+        return dataset, warnings
+
+    timeout = 28.0 if provider == "afir" else 45.0
+    try:
+        refreshed = await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        return refreshed, warnings
+    except Exception as err:
+        # A very old disk cache is still preferable to making every POI search
+        # depend on a live third-party request.  Only reject it after 45 days.
+        if elements and age <= CHARGING_MAX_STALE_SECONDS:
+            warnings.append(f"{provider.upper()}: Aktualisierung fehlgeschlagen, älterer Cache aktiv ({err})")
+            return dataset, warnings
+        raise RuntimeError(f"{provider.upper()}: {err}") from err
+
+
+def _charging_connector_present(tags: dict[str, Any], connector: str) -> bool:
+    if connector == "any":
+        return True
+    mapping = {
+        "ccs": ("socket:type2_combo", "socket:ccs"),
+        "type2": ("socket:type2",),
+        "chademo": ("socket:chademo",),
+        "tesla": ("socket:tesla_supercharger", "socket:tesla_destination"),
+    }
+    return any(_truthy_tag(tags.get(key)) for key in mapping.get(connector, ()))
+
+
+def _filter_charging_dataset(elements: list[dict[str, Any]], msg: dict[str, Any]) -> list[dict[str, Any]]:
+    lat = float(msg["latitude"])
+    lon = float(msg["longitude"])
+    radius_km = int(msg["radius_km"])
+    radius_m = radius_km * 1000.0
+    search = str(msg.get("search_filter", "")).strip().lower()
+    operator = str(msg.get("operator_filter", "")).strip().lower()
+    connector = str(msg.get("connector_filter", "any"))
+    min_power = int(msg.get("min_power_kw", 0))
+    include_unknown = bool(msg.get("include_unknown_power", True))
+    lat_margin = radius_km / 111.0
+    lon_margin = radius_km / max(20.0, 111.0 * math.cos(math.radians(lat)))
+    result: list[tuple[float, dict[str, Any]]] = []
+    for element in elements:
+        coords = _element_coords(element)
+        if coords is None:
+            continue
+        if abs(coords[0] - lat) > lat_margin or abs(coords[1] - lon) > lon_margin:
+            continue
+        distance = _haversine_m(lat, lon, coords[0], coords[1])
+        if distance > radius_m:
+            continue
+        tags = element.get("tags") or {}
+        haystack = " ".join(
+            str(tags.get(key, ""))
+            for key in (
+                "name", "brand", "operator", "network", "ref:EU:EVSE",
+                "addr:street", "addr:postcode", "addr:city", "addr:full",
+            )
+        ).lower()
+        operator_haystack = " ".join(
+            str(tags.get(key, "")) for key in ("name", "brand", "operator", "network", "ref:EU:EVSE")
+        ).lower()
+        if search and search not in haystack:
+            continue
+        if operator and operator not in operator_haystack:
+            continue
+        if not _charging_connector_present(tags, connector):
+            continue
+        if min_power > 0:
+            power = None
+            for key, value in tags.items():
+                if key == "charging_station:output" or key.endswith(":output") or key == "max_power":
+                    parsed = _parse_power_kw(value)
+                    if parsed is not None:
+                        power = max(power or 0.0, parsed)
+            if power is None and not include_unknown:
+                continue
+            if power is not None and power < min_power:
+                continue
+        result.append((distance, element))
+    result.sort(key=lambda item: item[0])
+    # Keep modest headroom for final cross-provider deduplication.
+    return [element for _distance, element in result[: min(3000, max(200, int(msg["max_results"]) * 3))]]
+
+
+async def _async_collect_local_charging(
+    hass: HomeAssistant, msg: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[str], list[str], bool]:
+    """Return locally searchable charging data without per-query public APIs."""
+    warnings: list[str] = []
+    sources: list[str] = []
+    provider_available = False
+
+    # AFIR is the primary source and small enough to await once when a fresh
+    # installation has no local cache.  BNetzA's ~50 MB monthly CSV is warmed in
+    # the background and never blocks the normal map query on first use.
+    afir_dataset: dict[str, Any] = {"elements": []}
+    bnetza_dataset: dict[str, Any] = {"elements": []}
+    try:
+        afir_dataset, afir_warnings = await _async_get_charging_dataset(
+            hass, "afir", wait_if_empty=True
+        )
+        warnings.extend(afir_warnings)
+        provider_available = provider_available or bool(afir_dataset.get("elements"))
+    except Exception as err:
+        warnings.append(f"AFIR/Mobilithek: {err}")
+
+    try:
+        bnetza_dataset, bnetza_warnings = await _async_get_charging_dataset(
+            hass, "bnetza", wait_if_empty=False
+        )
+        warnings.extend(bnetza_warnings)
+        provider_available = provider_available or bool(bnetza_dataset.get("elements"))
+    except Exception as err:
+        warnings.append(f"Bundesnetzagentur: {err}")
+
+    filtered_tasks = []
+    labels = []
+    if afir_dataset.get("elements"):
+        filtered_tasks.append(
+            hass.async_add_executor_job(_filter_charging_dataset, afir_dataset["elements"], msg)
+        )
+        labels.append("AFIR / Mobilithek")
+    if bnetza_dataset.get("elements"):
+        filtered_tasks.append(
+            hass.async_add_executor_job(_filter_charging_dataset, bnetza_dataset["elements"], msg)
+        )
+        labels.append("Bundesnetzagentur lokal")
+
+    combined: list[dict[str, Any]] = []
+    if filtered_tasks:
+        results = await asyncio.gather(*filtered_tasks, return_exceptions=True)
+        for label, result in zip(labels, results):
+            if isinstance(result, Exception):
+                warnings.append(f"{label}: lokale Filterung fehlgeschlagen ({result})")
+            else:
+                combined.extend(result)
+                sources.append(label)
+    return _merge_cross_provider_charging(combined), sources, warnings, provider_available
+
+
+async def async_warm_charging_sources(hass: HomeAssistant) -> None:
+    """Warm charging caches without competing with the primary AFIR download.
+
+    This coroutine itself is started as a Home Assistant background task.  On a
+    fresh install we give the comparatively small AFIR feed priority and only
+    start the ~50 MB BNetzA bulk refresh after AFIR has finished (or failed).
+    That keeps first-use IONITY/CCS searches responsive on slower HA hosts.
+    """
+    try:
+        afir = await _async_load_disk_dataset(hass, "afir")
+        afir_age = time.time() - float(afir.get("fetched_at", 0.0) or 0.0)
+        if not afir.get("elements") or afir_age > CHARGING_AFIR_TTL_SECONDS:
+            afir_task = await _async_start_dataset_refresh(hass, "afir")
+            try:
+                await asyncio.shield(afir_task)
+            except Exception as err:
+                _LOGGER.debug("AFIR warm-up failed; BNetzA fallback will still be prepared: %s", err)
+
+        bnetza = await _async_load_disk_dataset(hass, "bnetza")
+        bnetza_age = time.time() - float(bnetza.get("fetched_at", 0.0) or 0.0)
+        if not bnetza.get("elements") or bnetza_age > CHARGING_BNETZA_TTL_SECONDS:
+            # Do not await the large monthly CSV: the refresh remains fully in
+            # the background and the previous cache stays usable meanwhile.
+            await _async_start_dataset_refresh(hass, "bnetza")
+    except Exception:
+        _LOGGER.exception("Could not warm Cardata charging datasets")
 
 
 def _normalized_identity_text(tags: dict[str, Any]) -> set[str]:
@@ -782,7 +1224,7 @@ def _normalized_identity_text(tags: dict[str, Any]) -> set[str]:
 
 
 def _merge_cross_provider_charging(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate OSM/QLever/BNetzA charging locations and merge useful tags."""
+    """Deduplicate OSM/AFIR/BNetzA charging locations and merge useful tags."""
     merged: list[dict[str, Any]] = []
     by_osm_id: dict[tuple[str, int], int] = {}
 
@@ -841,13 +1283,7 @@ def _merge_cross_provider_charging(elements: list[dict[str, Any]]) -> list[dict[
 
 
 async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str, Any]:
-    """Run a robust multi-provider query under bounded global concurrency.
-
-    General POIs use Overpass. EV charging uses QLever OSM as its primary OSM
-    query path plus BNetzA inside Germany; Overpass is only a charging fallback
-    when QLever itself is unavailable. This keeps normal charging searches from
-    waiting on public Overpass proxy timeouts at all.
-    """
+    """Query general POIs live, but EV charging primarily from local bulk caches."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     semaphore = domain_data.get(DATA_POI_SEMAPHORE)
     if semaphore is None:
@@ -872,17 +1308,13 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
         categories = list(msg["categories"])
         charging_requested = "charging" in categories
         general_categories = [category for category in categories if category != "charging"]
-
-        provider_errors: list[str] = []
+        warnings: list[str] = []
         sources: list[str] = []
         combined: list[dict[str, Any]] = []
 
-        # Start every required independent provider immediately. For mixed
-        # category searches this lets the EV providers make progress while the
-        # general Overpass query is running.
-        overpass_task: asyncio.Task[tuple[list[dict[str, Any]], str]] | None = None
+        general_task: asyncio.Task[tuple[list[dict[str, Any]], str]] | None = None
         if general_categories:
-            general_query = _build_overpass_query(
+            query = _build_overpass_query(
                 float(msg["latitude"]),
                 float(msg["longitude"]),
                 int(msg["radius_km"]),
@@ -893,104 +1325,74 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
                 str(msg.get("operator_filter", "")),
                 "any",
             )
-            overpass_task = hass.async_create_task(
-                _async_fetch_overpass(hass, general_query, int(msg["timeout_seconds"]))
+            general_task = hass.async_create_task(
+                _async_fetch_overpass(hass, query, int(msg["timeout_seconds"]))
             )
 
-        qlever_task = (
-            hass.async_create_task(_async_fetch_qlever_charging(hass, msg))
-            if charging_requested
-            else None
-        )
-        bnetza_task = (
-            hass.async_create_task(_async_fetch_bnetza_charging(hass, msg))
-            if charging_requested
-            else None
-        )
+        charging_provider_available = False
+        if charging_requested:
+            charging_elements, charging_sources, charging_warnings, charging_provider_available = (
+                await _async_collect_local_charging(hass, msg)
+            )
+            combined.extend(charging_elements)
+            sources.extend(charging_sources)
+            warnings.extend(charging_warnings)
 
-        qlever_succeeded = False
-        if qlever_task is not None:
+        if general_task is not None:
             try:
-                qlever_elements, _qlever_endpoint = await qlever_task
-                qlever_succeeded = True
-                if qlever_elements:
-                    combined.extend(qlever_elements)
-                    sources.append("QLever OSM")
+                general_elements, endpoint = await general_task
+                combined.extend(general_elements)
+                sources.append(_endpoint_host(endpoint))
             except Exception as err:
-                provider_errors.append(f"QLever: {err}")
+                warnings.append(f"Overpass: {err}")
 
-        if bnetza_task is not None:
-            try:
-                bnetza_elements, bnetza_endpoint = await bnetza_task
-                if bnetza_elements:
-                    combined.extend(bnetza_elements)
-                    sources.append("Bundesnetzagentur")
-                elif bnetza_endpoint:
-                    # The provider was contacted successfully but had no match.
-                    pass
-            except Exception as err:
-                provider_errors.append(f"BNetzA: {err}")
-
-        if overpass_task is not None:
-            try:
-                overpass_elements, overpass_endpoint = await overpass_task
-                combined.extend(_aggregate_osm_charging(overpass_elements, "osm"))
-                sources.append(_endpoint_host(overpass_endpoint))
-            except Exception as err:
-                provider_errors.append(f"Overpass: {err}")
-
-        # Charging-only searches normally never touch Overpass. If the independent
-        # QLever path itself is unavailable, make one bounded Overpass fallback
-        # attempt so charging still has a third route outside BNetzA coverage.
-        if charging_requested and not qlever_succeeded and not any(
-            (item.get("tags") or {}).get("amenity") == "charging_station" for item in combined
-        ):
-            charging_query = _build_overpass_query(
+        # OSM is only a bounded emergency fallback for charging.  A working
+        # AFIR/BNetzA cache returning zero filtered matches is a valid result and
+        # must never trigger another public-query dependency.
+        if charging_requested and not charging_provider_available:
+            query = _build_overpass_query(
                 float(msg["latitude"]),
                 float(msg["longitude"]),
                 int(msg["radius_km"]),
                 ["charging"],
                 int(msg["max_results"]),
-                min(25, int(msg["timeout_seconds"])),
+                min(18, int(msg["timeout_seconds"])),
                 str(msg.get("search_filter", "")),
                 str(msg.get("operator_filter", "")),
                 str(msg.get("connector_filter", "any")),
             )
             try:
-                fallback_elements, fallback_endpoint = await _async_fetch_overpass(
-                    hass, charging_query, min(25, int(msg["timeout_seconds"]))
-                )
-                combined.extend(_aggregate_osm_charging(fallback_elements, "osm"))
-                sources.append(_endpoint_host(fallback_endpoint))
+                fallback, endpoint = await _async_fetch_overpass(hass, query, min(18, int(msg["timeout_seconds"])))
+                fallback = _aggregate_osm_charging(fallback, "osm")
+                fallback = await hass.async_add_executor_job(_filter_charging_dataset, fallback, msg)
+                combined.extend(fallback)
+                sources.append(_endpoint_host(endpoint))
+                warnings.append("Ladestationen: OSM-Notfallfallback aktiv")
             except Exception as err:
-                provider_errors.append(f"Overpass-EV-Fallback: {err}")
+                warnings.append(f"OSM-EV-Fallback: {err}")
 
         combined = _merge_cross_provider_charging(combined)
-        if not combined and provider_errors:
-            raise RuntimeError(" · ".join(provider_errors))
-
-        # Keep the bounded result set geographically useful. Without sorting, a
-        # large 200-km provider response could otherwise cut off nearby POIs just
-        # because the upstream service returned distant rows first.
         origin_lat = float(msg["latitude"])
         origin_lon = float(msg["longitude"])
 
-        def _distance_from_origin(item: dict[str, Any]) -> float:
+        def _distance(item: dict[str, Any]) -> float:
             coords = _element_coords(item)
             if coords is None:
                 return float("inf")
             return _haversine_m(origin_lat, origin_lon, coords[0], coords[1])
 
-        combined.sort(key=_distance_from_origin)
+        combined.sort(key=_distance)
         max_results = int(msg["max_results"])
-        if len(combined) > max_results * 2:
-            combined = combined[: max_results * 2]
-        source_label = " + ".join(dict.fromkeys(sources)) or "Home Assistant"
+        combined = combined[: max_results * 2]
+
+        if not combined and warnings and not charging_provider_available and not sources:
+            raise RuntimeError(" · ".join(warnings))
+
         return {
             "elements": combined,
-            "endpoint": source_label,
+            "endpoint": " + ".join(dict.fromkeys(sources)) or "Lokaler POI-Cache",
             "sources": list(dict.fromkeys(sources)),
-            "warnings": provider_errors,
+            "warnings": warnings,
             "stored_at": time.monotonic(),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         }
@@ -1075,6 +1477,8 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
         vol.Optional("connector_filter", default="any"): vol.In(
             ["any", "ccs", "type2", "chademo", "tesla"]
         ),
+        vol.Optional("min_power_kw", default=0): vol.In([0, 50, 100, 150, 200, 300, 350]),
+        vol.Optional("include_unknown_power", default=True): vol.Coerce(bool),
         vol.Optional("force_refresh", default=False): vol.Coerce(bool),
         vol.Optional("max_results", default=500): vol.All(vol.Coerce(int), vol.Range(min=50, max=1000)),
         vol.Optional("timeout_seconds", default=35): vol.All(vol.Coerce(int), vol.Range(min=15, max=90)),

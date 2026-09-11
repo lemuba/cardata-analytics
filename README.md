@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.29 is the current separate interactive vehicle map:
+Version 0.1.30 is the current separate interactive vehicle map:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -222,7 +222,7 @@ For a custom provider, `satellite_url` must be HTTPS and contain `{z}`, `{x}` an
 
 POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km, 25 km, 50 km, 100 km, 150 km and 200 km**.
 
-Available POI categories in 0.1.29:
+Available POI categories in 0.1.30:
 
 - EV charging stations
 - Fuel stations
@@ -236,7 +236,7 @@ Available POI categories in 0.1.29:
 - Hospitals
 - Public toilets
 
-POI filters in 0.1.29 can be combined freely. In addition to category and radius, the panel supports:
+POI filters in 0.1.30 can be combined freely. In addition to category and radius, the panel supports:
 
 - free-text filtering across POI name, address, brand, operator and network
 - operator/network filtering such as `IONITY`, `Shell` or `EnBW` (also narrowed server-side before the Overpass result limit)
@@ -246,13 +246,15 @@ POI filters in 0.1.29 can be combined freely. In addition to category and radius
 - built-in presets such as **IONITY Schnellladen**, **Schnellladen ≥100 kW**, **Tankstellen**, **Essen & Pause** and **Parken & Laden**
 - user-defined presets that can be saved, overwritten and deleted locally in the browser
 
-Custom presets store the selected categories, radius, text/operator filters, connector, minimum power and unknown-power option. They intentionally remain browser-local in 0.1.29; this keeps the analytics/ledger backend untouched.
+Custom presets store the selected categories, radius, text/operator filters, connector, minimum power and unknown-power option. They intentionally remain browser-local in 0.1.30; this keeps the analytics/ledger backend untouched.
 
-POIs are queried from OpenStreetMap through the public Overpass API only after POI filters are enabled. By default the Lovelace card sends the POI request to the Cardata Analytics backend over Home Assistant's existing websocket connection, and Home Assistant performs the external Overpass request. This avoids depending on third-party CORS or Companion WebView networking. Cardata Analytics combines selected filters into one request, debounces filter changes, serializes/rate-limits server-side access, limits displayed results, and caches successful results both in browser-local storage and briefly in Home Assistant memory. This is designed for occasional personal dashboard use rather than continuous or high-volume POI harvesting.
+General non-charging POIs are queried from OpenStreetMap through public Overpass instances only after POI filters are enabled. The Lovelace card sends the request to Cardata Analytics over Home Assistant's websocket connection and Home Assistant performs the external query, so browser CORS/Companion WebView networking is not a prerequisite. The latest-request-wins state machine, watchdog, bounded retries, same-query single-flight deduplication, endpoint cooldowns and manual **Aktualisieren** cache bypass remain in place. Very broad 100–200 km searches still benefit from name/operator filters for these general Overpass POIs.
 
-From 0.1.29, general POIs continue to use OpenStreetMap/Overpass, while EV charging searches use a separate multi-provider path. QLever OSM Planet is the primary OSM charging query path; for searches overlapping Germany, Cardata Analytics additionally queries the Bundesnetzagentur charging-station map dataset. Overpass is used for EV charging only as a bounded fallback when QLever is unavailable. OSM `man_made=charge_point` objects are merged into nearby `amenity=charging_station` locations before CCS/power filters are applied, so stations are no longer lost merely because connector or output tags are stored on separately mapped charge points. Duplicate OSM/QLever/BNetzA charging locations are merged by OSM ID and conservative proximity/identity matching. Provider calls run in parallel, so a slow Overpass proxy does not have to time out before charging-specific fallback data can arrive.
+From **0.1.30**, EV charging searches use a separate, local-cache-first path. The primary charging source is the open **AFIR / Mobilithek Eco-Movement** DATEX-II publication. Cardata Analytics normalizes station/operator information, coordinates, EVSE IDs, connectors and available power into the same internal POI model. IONITY can therefore be recognized both by human-readable operator/network fields and by `DE*IOY*...` EVSE identifiers.
 
-The latest-request-wins frontend state machine, watchdog, bounded retries, same-query single-flight deduplication, endpoint cooldowns and manual **Aktualisieren** cache bypass remain in place. Very broad 100–200 km searches still benefit from operator/name filters, especially for general (non-charging) Overpass POIs.
+As an independent German fallback, Cardata Analytics downloads the official monthly **Bundesnetzagentur charging-register CSV** and stores a normalized compressed copy locally. That larger file is refreshed in the background so it does not block the first map query. Both charging datasets are persisted under Home Assistant `.storage` and use stale-while-revalidate behavior: once a valid cache exists, radius/filter changes are local operations and a temporary provider outage does not remove the last known charging data. QLever and the token-dependent Bundesnetzagentur API are no longer part of the critical charging path. OSM/Overpass remains only a bounded emergency fallback when neither local charging dataset is available.
+
+The local charging filters support **2 / 5 / 10 / 25 / 50 / 100 / 150 / 200 km**, free text/operator searches, CCS/Type 2/CHAdeMO/Tesla connector filters, minimum charging power and inclusion/exclusion of stations with unknown power. Because these filters run on the cached dataset, targeted searches such as **IONITY + CCS + ≥100 kW + 200 km** do not create a fresh third-party query on every UI change.
 
 For installations that prefer another Overpass provider or a self-hosted endpoint, the map card also accepts optional advanced settings:
 
@@ -264,7 +266,7 @@ poi_max_results: 500
 poi_request_timeout_seconds: 35
 ```
 
-`overpass_url` must use HTTPS. When `overpass_url` is omitted, Home Assistant performs the request server-side and first tries `overpass-api.de`, then `overpass.kumi.systems` and `overpass.private.coffee` if earlier requests fail or time out. `overpass_url` is retained only for backwards-compatible card configuration; normal POI requests remain routed through Home Assistant. `poi_cache_minutes` is clamped to 5–120 minutes, `poi_max_results` to 50–1000, and `poi_request_timeout_seconds` to 15–90 seconds.
+`overpass_url` must use HTTPS. It only affects **general OSM POIs** (and the emergency OSM charging fallback). When omitted, Home Assistant uses its built-in current public Overpass failover list. Charging searches normally use the local AFIR/Bundesnetzagentur caches instead. `overpass_url` is retained for backwards-compatible/advanced configuration; `poi_cache_minutes` is clamped to 5–120 minutes, `poi_max_results` to 50–1000, and `poi_request_timeout_seconds` to 15–90 seconds.
 
 Nearby POIs are clustered automatically when several markers overlap at the current zoom level. Clicking a cluster zooms further in. Clicking an individual POI shows its category, available OSM address/details and straight-line distance from the selected vehicle. When present in OSM, the popup also includes opening hours, operator/brand, phone, website, access/fee information, capacity and charging-connector tags.
 
