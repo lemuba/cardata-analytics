@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.22";
+const CARD_VERSION = "0.1.23";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -1363,7 +1363,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
   }
 
   _poiCacheStorageKey() {
-    return `${this._storageKey}:poi-cache-v3`;
+    return `${this._storageKey}:poi-cache-v4`;
   }
 
   _readPoiCache() {
@@ -1421,6 +1421,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     if (configuredEndpoint) return [configuredEndpoint];
     return [
       "https://overpass-api.de/api/interpreter",
+      "https://overpass.kumi.systems/api/interpreter",
       "https://overpass.private.coffee/api/interpreter",
     ];
   }
@@ -1543,7 +1544,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
     if (!force) {
       const cache = this._readPoiCache();
       const cached = cache[cacheKey];
-      if (cached && Date.now() - Number(cached.timestamp) <= this._poiCacheTtlMs && Array.isArray(cached.results)) {
+      if (cached && Date.now() - Number(cached.timestamp) <= this._poiCacheTtlMs
+          && Array.isArray(cached.results) && cached.results.length > 0) {
         this._poiResults = cached.results;
         this._poiSourceVehicleId = vehicle.deviceId;
         this._poiSourceLat = vehicle.lat;
@@ -1619,7 +1621,11 @@ class CardataAnalyticsMapCard extends HTMLElement {
         : "";
       this._poiLoading = false;
       const cache = this._readPoiCache();
-      cache[cacheKey] = { timestamp: Date.now(), results: this._poiResults };
+      if (this._poiResults.length > 0) {
+        cache[cacheKey] = { timestamp: Date.now(), results: this._poiResults };
+      } else {
+        delete cache[cacheKey];
+      }
       this._writePoiCache(cache);
     } catch (err) {
       if (token !== this._poiRequestToken) return;
@@ -1873,20 +1879,36 @@ class CardataAnalyticsMapCard extends HTMLElement {
       const customAttribution = typeof this._config.satellite_attribution === "string" ? this._config.satellite_attribution.trim() : "";
       const validTemplate = /^https:\/\//i.test(customUrl)
         && ["{z}", "{x}", "{y}"].every((token) => customUrl.includes(token));
-      if (!validTemplate || !customAttribution) {
+
+      // A user-supplied provider still takes precedence. If only half of a
+      // custom provider is configured, surface the configuration error instead
+      // of silently falling back to another provider.
+      if (customUrl || customAttribution) {
+        if (!validTemplate || !customAttribution) {
+          return {
+            id: "satellite-custom-invalid",
+            url: null,
+            maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
+            attribution: "",
+            unavailableMessage: "Ungültige Satelliten-Konfiguration. satellite_url muss HTTPS mit {z}/{x}/{y} enthalten und satellite_attribution muss gesetzt sein.",
+          };
+        }
         return {
-          id: "satellite-unconfigured",
-          url: null,
+          id: `satellite-custom:${customUrl}`,
+          url: (z, x, y) => customUrl.split("{z}").join(String(z)).split("{x}").join(String(x)).split("{y}").join(String(y)),
           maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
-          attribution: "",
-          unavailableMessage: "Satellitenansicht ist nicht konfiguriert. Bitte satellite_url (HTTPS mit {z}/{x}/{y}) und satellite_attribution setzen.",
+          attribution: this._esc(customAttribution),
         };
       }
+
+      // Same key-free World Imagery tile endpoint used by the supplied Bosch
+      // eBike map card. Keep the provider replaceable through satellite_url /
+      // satellite_attribution and show the required imagery source attribution.
       return {
-        id: `satellite-custom:${customUrl}`,
-        url: (z, x, y) => customUrl.split("{z}").join(String(z)).split("{x}").join(String(x)).split("{y}").join(String(y)),
+        id: "satellite-esri-world-imagery",
+        url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
         maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
-        attribution: this._esc(customAttribution),
+        attribution: "Tiles © Esri · Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
       };
     }
     if (effectiveMode === "topo") {

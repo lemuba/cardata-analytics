@@ -756,7 +756,7 @@ class VehicleRuntime:
                 params["accept-language"] = str(language)
             headers = {
                 "User-Agent": (
-                    "CardataAnalytics/0.1.22 "
+                    "CardataAnalytics/0.1.23 "
                     "(+https://github.com/lemuba/cardata-analytics)"
                 )
             }

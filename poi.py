@@ -26,6 +26,7 @@ POI_CACHE_TTL_SECONDS = 15 * 60
 POI_MIN_REQUEST_INTERVAL_SECONDS = 1.0
 OVERPASS_ENDPOINTS = (
     "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 )
 
@@ -65,7 +66,13 @@ def _build_overpass_query(
     return (
         f"[out:json][timeout:{overpass_timeout}];"
         f"({''.join(clauses)});"
-        f"out tags center qt {max_results};"
+        # IMPORTANT: do not use `out tags center` here. `out tags` suppresses
+        # node coordinates, while `center` only adds a center to ways and
+        # relations. Most OSM POIs are nodes, so the frontend would receive
+        # valid elements but discard them for missing lat/lon. The default
+        # `body` verbosity preserves node coordinates and tags; `center` adds
+        # one usable coordinate for ways/relations.
+        f"out center qt {max_results};"
     )
 
 
@@ -99,7 +106,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.22 "
+                            "Cardata Analytics/0.1.23 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -135,7 +142,11 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
     now = time.monotonic()
 
     cached = cache.get(key)
-    if cached and now - float(cached.get("stored_at", 0.0)) <= POI_CACHE_TTL_SECONDS:
+    if (
+        cached
+        and cached.get("elements")
+        and now - float(cached.get("stored_at", 0.0)) <= POI_CACHE_TTL_SECONDS
+    ):
         return {
             "elements": cached["elements"],
             "endpoint": cached["endpoint"],
@@ -150,7 +161,11 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
         # Another dashboard may have filled the same key while we were waiting.
         now = time.monotonic()
         cached = cache.get(key)
-        if cached and now - float(cached.get("stored_at", 0.0)) <= POI_CACHE_TTL_SECONDS:
+        if (
+            cached
+            and cached.get("elements")
+            and now - float(cached.get("stored_at", 0.0)) <= POI_CACHE_TTL_SECONDS
+        ):
             return {
                 "elements": cached["elements"],
                 "endpoint": cached["endpoint"],
@@ -182,13 +197,23 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
             "endpoint": endpoint,
             "stored_at": time.monotonic(),
         }
-        cache[key] = result
 
-        # Keep the in-memory integration cache deliberately small.
-        if len(cache) > 12:
-            oldest = sorted(cache.items(), key=lambda item: float(item[1].get("stored_at", 0.0)))
-            for old_key, _value in oldest[:-12]:
-                cache.pop(old_key, None)
+        # Do not cache empty results. A transient Overpass hiccup must not
+        # poison subsequent POI requests with a seemingly successful empty
+        # response (same strategy as the proven Bosch eBike map card).
+        if result["elements"]:
+            cache[key] = result
+
+            # Keep the in-memory integration cache deliberately small.
+            if len(cache) > 12:
+                oldest = sorted(
+                    cache.items(),
+                    key=lambda item: float(item[1].get("stored_at", 0.0)),
+                )
+                for old_key, _value in oldest[:-12]:
+                    cache.pop(old_key, None)
+        else:
+            cache.pop(key, None)
 
         return {
             "elements": result["elements"],
