@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.27
+
+- Fixed POI refresh semantics: the manual **Aktualisieren** action now bypasses both the browser cache and the Home Assistant in-memory POI cache, so it performs a genuinely fresh Overpass request.
+- Added single-flight/coalescing for POI requests in the map card. Filter/radius edits made while an Overpass request is running no longer queue multiple stale backend requests; only the newest requested state is fetched next.
+- Free-text POI search is now also narrowed server-side across common OSM name/brand/operator/network/address tags, while the same filter is still applied client-side. This makes targeted searches such as Tesla/IONITY much lighter at larger radii.
+- Extended POI radius choices to **2 / 5 / 10 / 25 / 50 / 100 / 150 / 200 km**.
+- Increased the automatic vehicle-movement threshold proportionally for large-radius POI searches (up to 20 km) to avoid wasteful re-querying of public Overpass infrastructure.
+- POI cache keys now include the free-text search filter, so differently targeted searches cannot reuse an unrelated cached result set.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.27.js?v=0.1.27`.
+- Map providers and the Analytics/Daily Ledger/historical range/GPS calculation logic remain unchanged from 0.1.26.
+
 ## 0.1.26
 
 - Replaced the normal **OSM** basemap's direct `tile.openstreetmap.org` requests with the API-key-free **OpenFreeMap Liberty** vector style rendered by MapLibre GL JS, with visible OpenFreeMap/OpenMapTiles/OpenStreetMap attribution.

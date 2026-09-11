@@ -53,6 +53,7 @@ def _build_overpass_query(
     categories: list[str],
     max_results: int,
     timeout_seconds: int,
+    search_filter: str = "",
     operator_filter: str = "",
     connector_filter: str = "any",
 ) -> str:
@@ -60,19 +61,25 @@ def _build_overpass_query(
     radius_m = max(500, radius_km * 1000)
     around = f"(around:{radius_m},{latitude:.6f},{longitude:.6f})"
     clauses: list[str] = []
+    search_filter = search_filter.strip()[:80]
     operator_filter = operator_filter.strip()[:80]
     connector_filter = connector_filter if connector_filter in {"any", "ccs", "type2", "chademo", "tesla"} else "any"
 
-    # A user-entered operator/network string is narrowed server-side so a 50 km
-    # IONITY/Shell/etc. search is not lost behind the generic result cap.
-    # Values are escaped as literal regex text before being embedded in QL.
-    regex = re.escape(operator_filter).replace('"', r'\"') if operator_filter else ""
-    operator_variants = [""] if not regex else [
-        f'["operator"~"{regex}",i]',
-        f'["brand"~"{regex}",i]',
-        f'["network"~"{regex}",i]',
-        f'["name"~"{regex}",i]',
-    ]
+    # Narrow text/operator searches directly in Overpass. Using a regex for the
+    # *tag key* avoids four separate union branches for name/brand/operator/network
+    # and becomes especially important for 100-200 km searches. The frontend
+    # still applies the same filters again locally to keep the result semantics
+    # deterministic.
+    search_regex = re.escape(search_filter).replace('"', r'\"') if search_filter else ""
+    operator_regex = re.escape(operator_filter).replace('"', r'\"') if operator_filter else ""
+    search_expression = (
+        f'[~"^(name|brand|operator|network|addr:street|addr:city|addr:postcode|addr:housename)$"~"{search_regex}",i]'
+        if search_regex else ""
+    )
+    operator_expression = (
+        f'[~"^(name|brand|operator|network)$"~"{operator_regex}",i]'
+        if operator_regex else ""
+    )
     connector_variants = {
         "any": [""],
         "ccs": ['["socket:ccs"]', '["socket:type2_combo"]', '["socket:ccs:output"]', '["socket:type2_combo:output"]'],
@@ -84,11 +91,10 @@ def _build_overpass_query(
     for category in sorted(set(categories)):
         for filter_expression in POI_CLAUSES.get(category, ()):  # validated above
             connectors = connector_variants[connector_filter] if category == "charging" else [""]
-            for operator_expression in operator_variants:
-                for connector_expression in connectors:
-                    clauses.append(
-                        f"nwr{filter_expression}{operator_expression}{connector_expression}{around};"
-                    )
+            for connector_expression in connectors:
+                clauses.append(
+                    f"nwr{filter_expression}{search_expression}{operator_expression}{connector_expression}{around};"
+                )
 
     # Keep the server-side timeout slightly below the HTTP timeout so Overpass
     # can return a useful status instead of being cut off by the client first.
@@ -114,6 +120,7 @@ def _cache_key(msg: dict[str, Any]) -> tuple[Any, ...]:
         int(msg["radius_km"]),
         tuple(sorted(set(msg["categories"]))),
         int(msg["max_results"]),
+        str(msg.get("search_filter", "")).strip().lower(),
         str(msg.get("operator_filter", "")).strip().lower(),
         str(msg.get("connector_filter", "any")),
     )
@@ -138,7 +145,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.26 "
+                            "Cardata Analytics/0.1.27 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -173,7 +180,8 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
     key = _cache_key(msg)
     now = time.monotonic()
 
-    cached = cache.get(key)
+    force_refresh = bool(msg.get("force_refresh", False))
+    cached = None if force_refresh else cache.get(key)
     if (
         cached
         and cached.get("elements")
@@ -192,7 +200,7 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
     async with lock:
         # Another dashboard may have filled the same key while we were waiting.
         now = time.monotonic()
-        cached = cache.get(key)
+        cached = None if force_refresh else cache.get(key)
         if (
             cached
             and cached.get("elements")
@@ -216,6 +224,7 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
             list(msg["categories"]),
             int(msg["max_results"]),
             int(msg["timeout_seconds"]),
+            str(msg.get("search_filter", "")),
             str(msg.get("operator_filter", "")),
             str(msg.get("connector_filter", "any")),
         )
@@ -261,13 +270,15 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
         vol.Required("type"): WS_TYPE_POI,
         vol.Required("latitude"): vol.All(vol.Coerce(float), vol.Range(min=-90, max=90)),
         vol.Required("longitude"): vol.All(vol.Coerce(float), vol.Range(min=-180, max=180)),
-        vol.Required("radius_km"): vol.In([2, 5, 10, 25, 50]),
+        vol.Required("radius_km"): vol.In([2, 5, 10, 25, 50, 100, 150, 200]),
         vol.Required("categories"): vol.All(
             [vol.In(tuple(POI_CLAUSES))],
             vol.Length(min=1, max=len(POI_CLAUSES)),
         ),
+        vol.Optional("search_filter", default=""): vol.All(str, vol.Length(max=80)),
         vol.Optional("operator_filter", default=""): vol.All(str, vol.Length(max=80)),
         vol.Optional("connector_filter", default="any"): vol.In(["any", "ccs", "type2", "chademo", "tesla"]),
+        vol.Optional("force_refresh", default=False): vol.Coerce(bool),
         vol.Optional("max_results", default=500): vol.All(
             vol.Coerce(int), vol.Range(min=50, max=1000)
         ),
