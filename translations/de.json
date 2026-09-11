@@ -1,0 +1,54 @@
+{
+  "title": "Cardata Analytics",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Fahrzeug hinzufügen",
+        "description": "Wähle ein BMW-Preset oder BEV für ein herstellerneutrales Elektrofahrzeug. Es können beliebig viele Fahrzeuge eingerichtet werden.",
+        "data": {
+          "vehicle_type": "Fahrzeugtyp"
+        }
+      },
+      "vehicle": {
+        "title": "Fahrzeugsensoren",
+        "description": "Wähle die vorhandenen Home-Assistant-Sensoren des Fahrzeugs. Der Energie-/Kapazitätssensor muss die nutzbare Gesamtkapazität der Batterie liefern, nicht den aktuellen Ladeenergieinhalt. Bei BEV kann alternativ eine feste nutzbare Batteriekapazität angegeben werden. Wenn Latitude und Longitude konfiguriert sind, kann Cardata Analytics die aktuelle Adresse über OpenStreetMap Nominatim ermitteln und einen Google-Maps-Link ohne Google-API-Key bereitstellen.",
+        "data": {
+          "vehicle_name": "Fahrzeugname",
+          "soc_entity": "Ladezustands-Sensor (SoC in %)",
+          "mileage_entity": "Kilometerstand-Sensor",
+          "energy_entity": "Nutzbare Batteriekapazität / HV-Kapazität (optional bei BEV)",
+          "range_entity": "Restreichweite (optional)",
+          "soh_entity": "Batteriezustand / SoH (optional)",
+          "battery_capacity_kwh": "Nutzbare Batteriekapazität als Fallback (kWh)",
+          "latitude_entity": "GPS-Breitengrad-Sensor / Latitude (optional)",
+          "longitude_entity": "GPS-Längengrad-Sensor / Longitude (optional)"
+        }
+      },
+      "reconfigure": {
+        "title": "Cardata Analytics konfigurieren",
+        "description": "Ändere die Quellsensoren oder den Fahrzeugnamen. Optionale GPS-Sensoren für Latitude und Longitude können hier ergänzt oder geändert werden.",
+        "data": {
+          "vehicle_name": "Fahrzeugname",
+          "soc_entity": "Ladezustands-Sensor (SoC in %)",
+          "mileage_entity": "Kilometerstand-Sensor",
+          "energy_entity": "Nutzbare Batteriekapazität / HV-Kapazität",
+          "range_entity": "Restreichweite (optional)",
+          "soh_entity": "Batteriezustand / SoH (optional)",
+          "battery_capacity_kwh": "Nutzbare Batteriekapazität als Fallback (kWh)",
+          "latitude_entity": "GPS-Breitengrad-Sensor / Latitude (optional)",
+          "longitude_entity": "GPS-Längengrad-Sensor / Longitude (optional)"
+        }
+      }
+    },
+    "error": {
+      "capacity_source_required": "Für BEV muss entweder ein Kapazitätssensor oder eine feste nutzbare Batteriekapazität angegeben werden.",
+      "gps_pair_required": "Bitte Latitude und Longitude gemeinsam auswählen oder beide Felder leer lassen."
+    },
+    "abort": {
+      "already_configured": "Dieses Fahrzeug ist bereits eingerichtet.",
+      "reconfigure_successful": "Cardata Analytics wurde aktualisiert.",
+      "global_entry_managed": "Der globale Vergleichszeitraum wird automatisch von Cardata Analytics verwaltet.",
+      "unsupported_import": "Nicht unterstützter interner Import."
+    }
+  }
+}
