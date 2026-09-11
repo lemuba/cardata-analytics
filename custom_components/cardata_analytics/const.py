@@ -18,6 +18,12 @@ CONF_LATITUDE_ENTITY = "latitude_entity"
 CONF_LONGITUDE_ENTITY = "longitude_entity"
 CONF_BATTERY_CAPACITY = "battery_capacity_kwh"
 
+# Open Charge Map (Europe-wide charging-station provider)
+CONF_OCM_ENABLED = "open_charge_map_enabled"
+CONF_OCM_API_KEY = "open_charge_map_api_key"
+OCM_API_URL = "https://api.openchargemap.io/v3/poi/"
+OCM_REFERENCE_URL = "https://api.openchargemap.io/v3/referencedata/"
+
 VEHICLE_I3_120 = "i3_120"
 VEHICLE_IX1 = "ix1"
 VEHICLE_GENERIC_BEV = "bev"

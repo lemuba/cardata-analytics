@@ -1,16 +1,28 @@
 # Changelog
 
-## 0.1.31
+## 0.1.34
 
-- Made the official **Bundesnetzagentur charging register** the authoritative charging source. IONITY/Tesla/operator, CCS and power filters are now evaluated from the persistent local BNetzA dataset instead of depending on AFIR/Overpass coverage.
-- Removed every live Overpass/OSM fallback from the charging path. A charging-only search therefore cannot time out because a public Overpass instance is slow or unavailable. General non-charging POIs still use Overpass independently.
-- Changed first-use behavior: when the local charging database is not ready yet, the websocket returns immediately with a `building` state instead of waiting for an external provider. The map automatically retries every few seconds until the local dataset is ready.
-- Reworked the ~50 MB BNetzA CSV refresh to stream into a temporary file with a long background deadline. The previous successful cache remains untouched until the new file has downloaded and parsed successfully.
-- Preserved stale-while-revalidate behavior. After one successful download, all 2–200 km radius changes, IONITY/Tesla/operator searches, connector filters and power filters are purely local operations.
-- The existing AFIR parser remains in the codebase for compatibility/possible future enrichment, but AFIR is no longer a required or blocking source for charging searches.
-- IONITY is recognized from the official operator name and from `DE*IOY*...` EVSE identifiers in the BNetzA register.
-- Kept the latest-request-wins frontend loader, OpenFreeMap/Topo/Satellite/GPS modes, presets/filters and all Analytics/Daily Ledger/range logic unchanged.
-- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.31.js?v=0.1.31`.
+- Reworked the Open Charge Map client for lower payloads and fewer duplicate requests. Cardata now fetches OCM `/referencedata` once, stores a reduced persistent lookup cache, and decodes compact station responses locally.
+- OCM POI requests now use `compact=true&verbose=false&includecomments=false` whenever reference data is available, substantially reducing response size for 100–200 km searches.
+- Added persistent reference-data caching (7-day fresh TTL, up to 60-day stale fallback). If reference data is unavailable and no usable cache exists, charging searches automatically fall back to a normal non-compact OCM response instead of failing.
+- Added OCM area single-flight deduplication across multiple cards and rapid filter changes so identical live area requests share one network task.
+- Targeted operator/connector presets now resolve OCM reference IDs and send `operatorid` / `connectiontypeid` to OCM, reducing payloads and avoiding broad-result truncation for searches such as IONITY + CCS at 100–200 km. Broad cached areas can still satisfy narrower filters without a new request.
+- Fixed a cache write race where concurrent searches for different vehicles/areas could overwrite each other's persistent OCM area cache.
+- OCM station normalization now resolves compact `OperatorID`, `ConnectionTypeID`, `DataProviderID`, `UsageTypeID`, `StatusTypeID` and country IDs through the local reference cache while preserving operator names, CCS/Type 2/CHAdeMO/Tesla detection, power and source attribution.
+- Reconfigure/install key validation now uses the small OCM reference endpoint instead of an arbitrary POI query.
+- Updated the map footer to correctly identify Open Charge Map as the charging-station provider.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.34.js?v=0.1.34`.
+
+## 0.1.33
+
+- Replaced the Germany-only BNetzA/AFIR/QLever charging workflow with **Open Charge Map** as the Europe-wide charging-station provider.
+- Added Open Charge Map API-key fields to installation and Reconfigure. The key is validated server-side and never sent to Lovelace/browser code.
+- Synchronizes the one OCM credential across Cardata Analytics config entries so multi-vehicle setups do not need card-level configuration.
+- Added persistent per-area OCM caching under `.storage`: six-hour fresh cache plus up to seven-day stale fallback during provider outages.
+- Charging-only searches never call Overpass. General restaurants/fuel/pharmacy/etc. remain on the independent Overpass path.
+- Normalizes OCM operator/network, address, provider attribution, CCS/Type 2/CHAdeMO/Tesla connectors, power and capacity into the existing POI model.
+- Existing IONITY/Tesla/operator, connector, power and 2–200 km filters remain available without Lovelace edits.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.33.js?v=0.1.33`.
 
 ## 0.1.30
 

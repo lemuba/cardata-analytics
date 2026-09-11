@@ -19,6 +19,8 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     CONF_ENTRY_KIND,
+    CONF_OCM_API_KEY,
+    CONF_OCM_ENABLED,
     DATA_CONTROLLER,
     DATA_CONTROLLER_SETUP_TASK,
     DATA_GLOBAL_ENTRY_PENDING,
@@ -29,13 +31,13 @@ from .const import (
 )
 from .controller import GlobalRangeController
 from .runtime import VehicleRuntime
-from .poi import async_register_websocket, async_warm_charging_sources
+from .poi import async_register_websocket
 
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.31.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.31"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.34.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.34"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
@@ -118,10 +120,6 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     # POI network access runs server-side through Home Assistant so Lovelace
     # browsers and Companion WebViews do not depend on third-party CORS.
     async_register_websocket(hass)
-    # Warm the persistent bulk charging datasets in the background.  This never
-    # blocks Home Assistant startup or the analytics/ledger runtime.
-    hass.async_create_task(async_warm_charging_sources(hass))
-
     frontend_path = Path(__file__).parent / "frontend"
     await hass.http.async_register_static_paths(
         [StaticPathConfig(FRONTEND_URL, str(frontend_path), False)]
@@ -200,10 +198,17 @@ async def _async_ensure_global_entry(hass: HomeAssistant) -> None:
 
     domain_data[DATA_GLOBAL_ENTRY_PENDING] = True
     try:
+        global_data: dict[str, Any] = {CONF_ENTRY_KIND: ENTRY_KIND_GLOBAL}
+        for existing in hass.config_entries.async_entries(DOMAIN):
+            api_key = str(existing.data.get(CONF_OCM_API_KEY, "") or "").strip()
+            if api_key:
+                global_data[CONF_OCM_ENABLED] = bool(existing.data.get(CONF_OCM_ENABLED, True))
+                global_data[CONF_OCM_API_KEY] = api_key
+                break
         await hass.config_entries.flow.async_init(
             DOMAIN,
             context={"source": SOURCE_IMPORT},
-            data={CONF_ENTRY_KIND: ENTRY_KIND_GLOBAL},
+            data=global_data,
         )
     except Exception:  # pragma: no cover - defensive logging for HA runtime
         _LOGGER.exception("Could not create Cardata Analytics global comparison entry")

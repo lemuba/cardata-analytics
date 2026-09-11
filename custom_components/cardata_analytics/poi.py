@@ -13,6 +13,7 @@ import logging
 import math
 import re
 import time
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -23,7 +24,14 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN
+from .const import (
+    CONF_OCM_API_KEY,
+    CONF_OCM_ENABLED,
+    DOMAIN,
+    ENTRY_KIND_GLOBAL,
+    OCM_API_URL,
+    OCM_REFERENCE_URL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +61,7 @@ OVERPASS_ENDPOINTS = (
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 )
 
-# Charging infrastructure is deliberately bulk-cached locally.  Since 0.1.31
+# Charging infrastructure is deliberately bulk-cached locally.  Since 0.1.32
 # the Bundesnetzagentur register is the authoritative primary source for German
 # charging searches.  The large CSV is downloaded in the background and then
 # all radius/operator/connector/power filtering happens locally.  This avoids
@@ -65,20 +73,36 @@ AFIR_ECOMOVEMENT_URL = (
     "https://mobilithek.info/mdp-api/mdp-conn-server/v1/publication/"
     f"{AFIR_ECOMOVEMENT_PUBLICATION_ID}/file/noauth"
 )
-BNETZA_PAGE_URL = (
-    "https://www.bundesnetzagentur.de/DE/Fachthemen/ElektrizitaetundGas/"
-    "E-Mobilitaet/Ladesaeulenkarte/start.html"
+BNETZA_PAGE_URLS = (
+    "https://www.bundesnetzagentur.de/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/Ladesaeulenkarte/start.html",
+    "https://www.bundesnetzagentur.de/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/DownloadundKontakt.html",
 )
-# Safe initial fallback for the current release.  Normal operation discovers the
-# newest CSV link from the BNetzA page before downloading.
-BNETZA_FALLBACK_CSV_URL = (
+BNETZA_DATA_BASE = (
     "https://data.bundesnetzagentur.de/Bundesnetzagentur/DE/Fachthemen/"
-    "ElektrizitaetundGas/E-Mobilitaet/Ladesaeulenregister_BNetzA_2026-07-28.csv"
+    "ElektrizitaetundGas/E-Mobilitaet/"
 )
+BNETZA_FALLBACK_CSV_URL = BNETZA_DATA_BASE + "Ladesaeulenregister_BNetzA_2026-07-28.csv"
 CHARGING_DATASET_CACHE_VERSION = 1
 CHARGING_AFIR_TTL_SECONDS = 6 * 60 * 60
 CHARGING_BNETZA_TTL_SECONDS = 7 * 24 * 60 * 60
 CHARGING_MAX_STALE_SECONDS = 45 * 24 * 60 * 60
+
+# Open Charge Map is the active, Europe-wide charging provider from v0.1.33;
+# v0.1.34 adds cached reference-data decoding plus compact POI responses.
+# Results are cached persistently so interactive radius/filter changes do not
+# repeatedly hit the API and a temporary provider outage can use stale data.
+OCM_CACHE_VERSION = 1
+OCM_CACHE_TTL_SECONDS = 6 * 60 * 60
+OCM_CACHE_MAX_STALE_SECONDS = 7 * 24 * 60 * 60
+OCM_CACHE_MAX_AREAS = 8
+OCM_HTTP_TIMEOUT_SECONDS = 55.0
+OCM_REFERENCE_CACHE_VERSION = 1
+OCM_REFERENCE_TTL_SECONDS = 7 * 24 * 60 * 60
+OCM_REFERENCE_MAX_STALE_SECONDS = 60 * 24 * 60 * 60
+OCM_REFERENCE_HTTP_TIMEOUT_SECONDS = 30.0
+DATA_OCM_AREA_INFLIGHT = "ocm_area_inflight"
+DATA_OCM_REFERENCE_INFLIGHT = "ocm_reference_inflight"
+DATA_OCM_CACHE_LOCK = "ocm_cache_lock"
 
 POI_CLAUSES: dict[str, tuple[str, ...]] = {
     "charging": ('["amenity"="charging_station"]',),
@@ -277,7 +301,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.31 "
+                            "Cardata Analytics/0.1.34 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -907,6 +931,20 @@ def _parse_bnetza_csv(content: bytes) -> list[dict[str, Any]]:
     return result
 
 
+def _charging_dataset_stats(elements: list[dict[str, Any]]) -> dict[str, int]:
+    stats = {"count": len(elements), "ionity": 0, "tesla": 0, "ccs": 0}
+    for element in elements:
+        tags = element.get("tags") or {}
+        identity = " ".join(str(tags.get(key, "")) for key in ("name", "brand", "operator", "network", "ref:EU:EVSE")).lower()
+        if "ionity" in identity or "de*ioy" in identity or "de-ioy" in identity or "deioy" in identity:
+            stats["ionity"] += 1
+        if "tesla" in identity:
+            stats["tesla"] += 1
+        if any(tags.get(key) not in (None, "", "0", 0, False) for key in ("socket:type2_combo", "socket:ccs")):
+            stats["ccs"] += 1
+    return stats
+
+
 async def _async_load_disk_dataset(hass: HomeAssistant, provider: str) -> dict[str, Any]:
     domain_data = hass.data.setdefault(DOMAIN, {})
     datasets: dict[str, dict[str, Any]] = domain_data.setdefault(DATA_CHARGING_DATASETS, {})
@@ -927,7 +965,7 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
             headers={
                 "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
                 "Accept-Encoding": "gzip",
-                "User-Agent": "Cardata Analytics/0.1.31 (https://github.com/lemuba/cardata-analytics)",
+                "User-Agent": "Cardata Analytics/0.1.34 (https://github.com/lemuba/cardata-analytics)",
             },
             allow_redirects=True,
         ) as response:
@@ -952,27 +990,42 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
     return dataset
 
 
-async def _async_discover_bnetza_csv_url(hass: HomeAssistant) -> str:
+async def _async_discover_bnetza_csv_urls(hass: HomeAssistant) -> list[str]:
+    """Return ordered official BNetzA CSV candidates, newest first."""
     session = async_get_clientsession(hass)
-    try:
-        async with asyncio.timeout(15.0):
-            async with session.get(
-                BNETZA_PAGE_URL,
-                headers={"User-Agent": "Cardata Analytics/0.1.31"},
-            ) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"HTTP {response.status}")
-                page = await response.text(errors="replace")
-        candidates = re.findall(
-            r"href=[\"']([^\"']*Ladesaeulenregister_BNetzA_[^\"']+\\.csv)[\"']",
-            page,
-            flags=re.I,
-        )
-        if candidates:
-            return urljoin(BNETZA_PAGE_URL, html.unescape(candidates[-1]))
-    except Exception as err:
-        _LOGGER.debug("BNetzA CSV discovery failed, using release fallback: %s", err)
-    return BNETZA_FALLBACK_CSV_URL
+    candidates: list[str] = []
+    for page_url in BNETZA_PAGE_URLS:
+        try:
+            async with asyncio.timeout(12.0):
+                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.34"}) as response:
+                    if response.status != 200:
+                        raise RuntimeError(f"HTTP {response.status}")
+                    page = await response.text(errors="replace")
+            for href in re.findall(r"href=[\"']([^\"']*Ladesaeulenregister_BNetzA_[^\"']+\.csv)[\"']", page, flags=re.I):
+                url = urljoin(page_url, html.unescape(href))
+                if url not in candidates:
+                    candidates.append(url)
+        except Exception as err:
+            _LOGGER.debug("BNetzA CSV discovery failed for %s: %s", page_url, err)
+
+    today = datetime.now(timezone.utc).date()
+    year, month = today.year, today.month
+    for offset in range(0, 4):
+        y, m = year, month - offset
+        while m <= 0:
+            y -= 1
+            m += 12
+        for day in (1, 7, 28):
+            try:
+                stamp = date(y, m, day).isoformat()
+            except ValueError:
+                continue
+            url = BNETZA_DATA_BASE + f"Ladesaeulenregister_BNetzA_{stamp}.csv"
+            if url not in candidates:
+                candidates.append(url)
+    if BNETZA_FALLBACK_CSV_URL not in candidates:
+        candidates.append(BNETZA_FALLBACK_CSV_URL)
+    return candidates
 
 
 async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
@@ -983,42 +1036,61 @@ async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
     parser/cache objects.  The previous successful cache is left untouched until
     the replacement has parsed successfully.
     """
-    url = await _async_discover_bnetza_csv_url(hass)
+    urls = await _async_discover_bnetza_csv_urls(hass)
     session = async_get_clientsession(hass)
     cache_dir = Path(hass.config.path('.storage'))
     cache_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_dir / f"{DOMAIN}_bnetza_download.tmp"
+    url = ""
+    failures: list[str] = []
     try:
-        async with asyncio.timeout(6 * 60):
-            async with session.get(
-                url,
-                headers={
-                    "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
-                    "Accept-Encoding": "identity",
-                    "User-Agent": "Cardata Analytics/0.1.31",
-                },
-                allow_redirects=True,
-            ) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"Bundesnetzagentur CSV: HTTP {response.status}")
-                total = 0
-                with tmp_path.open('wb') as handle:
-                    async for chunk in response.content.iter_chunked(256 * 1024):
-                        if not chunk:
-                            continue
-                        handle.write(chunk)
-                        total += len(chunk)
-                if total < 1_000_000:
-                    raise RuntimeError(f"Bundesnetzagentur CSV: Antwort unerwartet klein ({total} Bytes)")
+        downloaded = False
+        for candidate in urls:
+            try:
+                async with asyncio.timeout(6 * 60):
+                    async with session.get(
+                        candidate,
+                        headers={
+                            "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
+                            "Accept-Encoding": "identity",
+                            "User-Agent": "Cardata Analytics/0.1.34",
+                        },
+                        allow_redirects=True,
+                    ) as response:
+                        if response.status != 200:
+                            raise RuntimeError(f"HTTP {response.status}")
+                        total = 0
+                        with tmp_path.open('wb') as handle:
+                            async for chunk in response.content.iter_chunked(256 * 1024):
+                                if not chunk:
+                                    continue
+                                handle.write(chunk)
+                                total += len(chunk)
+                        if total < 1_000_000:
+                            raise RuntimeError(f"Antwort unerwartet klein ({total} Bytes)")
+                url = candidate
+                downloaded = True
+                break
+            except Exception as err:
+                failures.append(f"{candidate.rsplit('/', 1)[-1]}: {err}")
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        if not downloaded:
+            raise RuntimeError("Bundesnetzagentur CSV nicht erreichbar: " + " · ".join(failures[-4:]))
 
         body = await hass.async_add_executor_job(tmp_path.read_bytes)
         elements = await hass.async_add_executor_job(_parse_bnetza_csv, body)
+        stats = await hass.async_add_executor_job(_charging_dataset_stats, elements)
         dataset = {
             "provider": "bnetza",
             "elements": elements,
             "fetched_at": time.time(),
             "source_url": url,
+            "stats": stats,
         }
+        _LOGGER.info("Cardata charging database ready: %s stations, %s IONITY, %s Tesla, %s CCS", stats.get("count", 0), stats.get("ionity", 0), stats.get("tesla", 0), stats.get("ccs", 0))
         await hass.async_add_executor_job(
             _write_dataset_cache, _dataset_cache_path(hass, "bnetza"), dataset
         )
@@ -1166,59 +1238,600 @@ def _filter_charging_dataset(elements: list[dict[str, Any]], msg: dict[str, Any]
     return [element for _distance, element in result[: min(3000, max(200, int(msg["max_results"]) * 3))]]
 
 
+
+def _ocm_settings(hass: HomeAssistant) -> tuple[bool, str]:
+    """Return the integration-wide Open Charge Map configuration."""
+    entries = list(hass.config_entries.async_entries(DOMAIN))
+    entries.sort(key=lambda item: 0 if item.data.get("entry_kind") == ENTRY_KIND_GLOBAL else 1)
+    for entry in entries:
+        key = str(entry.data.get(CONF_OCM_API_KEY, "") or "").strip()
+        if key:
+            return bool(entry.data.get(CONF_OCM_ENABLED, True)), key
+    return False, ""
+
+
+def _ocm_cache_path(hass: HomeAssistant) -> Path:
+    return Path(hass.config.path(".storage")) / f"{DOMAIN}_open_charge_map_cache.json"
+
+
+def _ocm_reference_cache_path(hass: HomeAssistant) -> Path:
+    return Path(hass.config.path(".storage")) / f"{DOMAIN}_open_charge_map_reference.json"
+
+
+def _read_ocm_cache(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if int(payload.get("version", 0)) != OCM_CACHE_VERSION:
+            return {"version": OCM_CACHE_VERSION, "areas": []}
+        areas = payload.get("areas")
+        if not isinstance(areas, list):
+            areas = []
+        return {"version": OCM_CACHE_VERSION, "areas": areas}
+    except Exception:
+        return {"version": OCM_CACHE_VERSION, "areas": []}
+
+
+def _write_ocm_cache(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _read_ocm_reference_cache(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if int(payload.get("version", 0)) != OCM_REFERENCE_CACHE_VERSION:
+            return {}
+        references = payload.get("references")
+        if not isinstance(references, dict):
+            return {}
+        return {
+            "version": OCM_REFERENCE_CACHE_VERSION,
+            "fetched_at": float(payload.get("fetched_at", 0.0) or 0.0),
+            "references": references,
+        }
+    except Exception:
+        return {}
+
+
+def _write_ocm_reference_cache(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _ocm_area_distance_m(area: dict[str, Any], lat: float, lon: float) -> float:
+    try:
+        return _haversine_m(lat, lon, float(area["latitude"]), float(area["longitude"]))
+    except Exception:
+        return float("inf")
+
+
+def _ocm_scope_signature(msg: dict[str, Any]) -> str:
+    """Return the server-side OCM subset represented by a cache entry."""
+    operator = str(msg.get("operator_filter", "") or "").strip().lower()[:80]
+    connector = str(msg.get("connector_filter", "any") or "any").strip().lower()
+    if connector == "any":
+        connector = ""
+    parts = []
+    if operator:
+        parts.append(f"operator={operator}")
+    if connector:
+        parts.append(f"connector={connector}")
+    return "|".join(parts)
+
+
+def _ocm_area_scope_covers(area: dict[str, Any], requested_scope: str) -> bool:
+    """A broad OCM cache can serve a narrow filter, never the reverse."""
+    cached_scope = str(area.get("scope", "") or "")
+    if not cached_scope:
+        return True
+    return cached_scope == requested_scope
+
+
+def _select_ocm_cached_area(
+    cache: dict[str, Any], lat: float, lon: float, radius_km: int, *, max_age: float,
+    requested_scope: str = "",
+) -> dict[str, Any] | None:
+    now = time.time()
+    matches: list[tuple[float, int, dict[str, Any]]] = []
+    for area in cache.get("areas", []):
+        if not isinstance(area, dict) or not area.get("elements"):
+            continue
+        if not _ocm_area_scope_covers(area, requested_scope):
+            continue
+        fetched_at = float(area.get("fetched_at", 0.0) or 0.0)
+        if not fetched_at or now - fetched_at > max_age:
+            continue
+        area_radius = int(area.get("radius_km", 0) or 0)
+        if area_radius < radius_km:
+            continue
+        center_distance = _ocm_area_distance_m(area, lat, lon)
+        if center_distance + radius_km * 1000 > area_radius * 1000:
+            continue
+        matches.append((center_distance, area_radius, area))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item[1], item[0]))
+    return matches[0][2]
+
+
+def _ocm_reference_index(items: Any, keep: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    if not isinstance(items, list):
+        return result
+    for item in items:
+        if not isinstance(item, dict) or item.get("ID") is None:
+            continue
+        compact = {key: item.get(key) for key in keep if item.get(key) not in (None, "")}
+        compact["ID"] = item.get("ID")
+        result[str(item.get("ID"))] = compact
+    return result
+
+
+def _build_ocm_reference_index(payload: dict[str, Any]) -> dict[str, Any]:
+    """Reduce OCM referencedata to the lookup fields Cardata actually needs."""
+    return {
+        "ConnectionTypes": _ocm_reference_index(
+            payload.get("ConnectionTypes"), ("Title", "FormalName")
+        ),
+        "Operators": _ocm_reference_index(
+            payload.get("Operators"), ("Title", "WebsiteURL", "PhonePrimaryContact")
+        ),
+        "DataProviders": _ocm_reference_index(
+            payload.get("DataProviders"), ("Title", "License", "WebsiteURL")
+        ),
+        "UsageTypes": _ocm_reference_index(payload.get("UsageTypes"), ("Title",)),
+        "StatusTypes": _ocm_reference_index(payload.get("StatusTypes"), ("Title",)),
+        "Countries": _ocm_reference_index(payload.get("Countries"), ("Title", "ISOCode")),
+    }
+
+
+def _ocm_reference_item(
+    references: dict[str, Any] | None, collection: str, value: Any
+) -> dict[str, Any]:
+    if not references or value in (None, ""):
+        return {}
+    items = references.get(collection)
+    if not isinstance(items, dict):
+        return {}
+    item = items.get(str(value))
+    return item if isinstance(item, dict) else {}
+
+
+def _ocm_server_filter_params(
+    references: dict[str, Any] | None, msg: dict[str, Any]
+) -> dict[str, str]:
+    """Resolve stable OCM reference IDs for targeted operator/connector queries."""
+    if not references:
+        return {}
+    params: dict[str, str] = {}
+    operator_filter = str(msg.get("operator_filter", "") or "").strip().lower()
+    if operator_filter:
+        operator_ids: list[int] = []
+        for key, item in (references.get("Operators") or {}).items():
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("Title", "") or "").lower()
+            if operator_filter in title:
+                try:
+                    operator_ids.append(int(key))
+                except (TypeError, ValueError):
+                    continue
+        if operator_ids:
+            params["operatorid"] = ",".join(str(item) for item in sorted(set(operator_ids)))
+
+    connector_filter = str(msg.get("connector_filter", "any") or "any").strip().lower()
+    if connector_filter != "any":
+        connection_ids: list[int] = []
+        for key in (references.get("ConnectionTypes") or {}):
+            probe = {"ConnectionTypeID": key}
+            if _ocm_connection_key(probe, references) == connector_filter:
+                try:
+                    connection_ids.append(int(key))
+                except (TypeError, ValueError):
+                    continue
+        if connection_ids:
+            params["connectiontypeid"] = ",".join(str(item) for item in sorted(set(connection_ids)))
+    return params
+
+
+async def _async_fetch_ocm_reference_data(
+    hass: HomeAssistant, api_key: str
+) -> dict[str, Any]:
+    session = async_get_clientsession(hass)
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Cardata Analytics/0.1.34 (https://github.com/lemuba/cardata-analytics)",
+    }
+    async with asyncio.timeout(OCM_REFERENCE_HTTP_TIMEOUT_SECONDS):
+        async with session.get(
+            OCM_REFERENCE_URL, params={"key": api_key}, headers=headers
+        ) as response:
+            body = await response.read()
+            if response.status in {401, 403} or b"REJECTED_APIKEY" in body[:2048].upper():
+                raise RuntimeError("Open Charge Map: API-Key wurde abgelehnt")
+            if response.status != 200:
+                raise RuntimeError(f"Open Charge Map Referenzdaten: HTTP {response.status}")
+    try:
+        payload = json.loads(body)
+    except Exception as err:
+        raise RuntimeError("Open Charge Map Referenzdaten: ungültige JSON-Antwort") from err
+    if not isinstance(payload, dict) or not isinstance(payload.get("ConnectionTypes"), list):
+        raise RuntimeError("Open Charge Map Referenzdaten: unerwartetes Antwortformat")
+    references = _build_ocm_reference_index(payload)
+    if not references.get("ConnectionTypes"):
+        raise RuntimeError("Open Charge Map Referenzdaten: keine Anschlussarten erhalten")
+    return references
+
+
+async def _async_get_ocm_references(
+    hass: HomeAssistant, api_key: str
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Return cached OCM reference data, refreshing it single-flight when needed."""
+    path = _ocm_reference_cache_path(hass)
+    cached = await hass.async_add_executor_job(_read_ocm_reference_cache, path)
+    fetched_at = float(cached.get("fetched_at", 0.0) or 0.0)
+    references = cached.get("references") if isinstance(cached.get("references"), dict) else None
+    age = time.time() - fetched_at if fetched_at else float("inf")
+    if references and age <= OCM_REFERENCE_TTL_SECONDS:
+        return references, []
+
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    inflight: dict[str, asyncio.Task[dict[str, Any]]] = domain_data.setdefault(
+        DATA_OCM_REFERENCE_INFLIGHT, {}
+    )
+    fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+    task = inflight.get(fingerprint)
+    if task is None or task.done():
+        task = hass.async_create_task(_async_fetch_ocm_reference_data(hass, api_key))
+        inflight[fingerprint] = task
+    try:
+        fresh = await asyncio.shield(task)
+        payload = {
+            "version": OCM_REFERENCE_CACHE_VERSION,
+            "fetched_at": time.time(),
+            "references": fresh,
+        }
+        await hass.async_add_executor_job(_write_ocm_reference_cache, path, payload)
+        return fresh, []
+    except Exception as err:
+        if references and age <= OCM_REFERENCE_MAX_STALE_SECONDS:
+            age_days = max(1, int(age / 86400))
+            return references, [
+                f"Open Charge Map Referenzdaten nicht aktualisiert – Cache {age_days} Tage alt ({err})"
+            ]
+        return None, [
+            f"Open Charge Map Referenzdaten nicht erreichbar; Stationsantwort wird unkomprimiert geladen ({err})"
+        ]
+    finally:
+        if inflight.get(fingerprint) is task and task.done():
+            inflight.pop(fingerprint, None)
+
+
+def _ocm_connection_key(
+    connection: dict[str, Any], references: dict[str, Any] | None = None
+) -> str | None:
+    ct = connection.get("ConnectionType") if isinstance(connection.get("ConnectionType"), dict) else {}
+    if not ct:
+        ct = _ocm_reference_item(references, "ConnectionTypes", connection.get("ConnectionTypeID"))
+    text = " ".join(
+        str(value or "") for value in (
+            ct.get("Title"), ct.get("FormalName"), connection.get("ConnectionTypeID")
+        )
+    ).lower()
+    if "ccs" in text or "combo" in text:
+        return "ccs"
+    if "chademo" in text:
+        return "chademo"
+    if "type 2" in text or "type2" in text or "mennekes" in text:
+        return "type2"
+    if "tesla" in text or "nacs" in text:
+        return "tesla"
+    return None
+
+
+def _ocm_station_to_element(
+    station: dict[str, Any], references: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    address = station.get("AddressInfo") if isinstance(station.get("AddressInfo"), dict) else {}
+    try:
+        lat = float(address.get("Latitude"))
+        lon = float(address.get("Longitude"))
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+
+    operator_info = station.get("OperatorInfo") if isinstance(station.get("OperatorInfo"), dict) else {}
+    if not operator_info:
+        operator_info = _ocm_reference_item(references, "Operators", station.get("OperatorID"))
+    provider_info = station.get("DataProvider") if isinstance(station.get("DataProvider"), dict) else {}
+    if not provider_info:
+        provider_info = _ocm_reference_item(references, "DataProviders", station.get("DataProviderID"))
+    usage = station.get("UsageType") if isinstance(station.get("UsageType"), dict) else {}
+    if not usage:
+        usage = _ocm_reference_item(references, "UsageTypes", station.get("UsageTypeID"))
+    status = station.get("StatusType") if isinstance(station.get("StatusType"), dict) else {}
+    if not status:
+        status = _ocm_reference_item(references, "StatusTypes", station.get("StatusTypeID"))
+    country = address.get("Country") if isinstance(address.get("Country"), dict) else {}
+    if not country:
+        country = _ocm_reference_item(references, "Countries", address.get("CountryID"))
+
+    title = str(address.get("Title") or operator_info.get("Title") or "Ladestation").strip()
+    operator = str(operator_info.get("Title") or "").strip()
+    tags: dict[str, Any] = {
+        "amenity": "charging_station",
+        "name": title,
+        "operator": operator,
+        "network": operator,
+        "brand": operator,
+        "addr:street": address.get("AddressLine1") or "",
+        "addr:city": address.get("Town") or "",
+        "addr:postcode": address.get("Postcode") or "",
+        "addr:state": address.get("StateOrProvince") or "",
+        "addr:country": country.get("ISOCode") or country.get("Title") or "",
+        "phone": address.get("ContactTelephone1") or operator_info.get("PhonePrimaryContact") or "",
+        "website": operator_info.get("WebsiteURL") or address.get("RelatedURL") or "",
+        "capacity": station.get("NumberOfPoints") or "",
+        "access": usage.get("Title") or "",
+        "cardata:provider": "ocm",
+        "cardata:data_provider": provider_info.get("Title") or "Open Charge Map",
+        "cardata:data_provider_license": provider_info.get("License") or "",
+        "cardata:data_provider_url": provider_info.get("WebsiteURL") or "",
+        "cardata:status": status.get("Title") or "",
+        "cardata:last_verified": station.get("DateLastVerified") or "",
+        "ref:ocm": station.get("UUID") or station.get("ID") or "",
+    }
+    if station.get("OperatorsReference"):
+        tags["ref"] = station.get("OperatorsReference")
+
+    max_power: float | None = None
+    connector_counts: dict[str, int] = {}
+    for connection in station.get("Connections") or []:
+        if not isinstance(connection, dict):
+            continue
+        key = _ocm_connection_key(connection, references)
+        qty = connection.get("Quantity")
+        try:
+            qty_i = max(1, int(qty)) if qty not in (None, "") else 1
+        except (TypeError, ValueError):
+            qty_i = 1
+        if key:
+            connector_counts[key] = connector_counts.get(key, 0) + qty_i
+        try:
+            power = float(connection.get("PowerKW"))
+        except (TypeError, ValueError):
+            power = None
+        if power is not None and math.isfinite(power) and power > 0:
+            max_power = max(max_power or 0.0, power)
+            if key == "ccs":
+                tags["socket:type2_combo:output"] = f"{power:g} kW"
+            elif key == "type2":
+                tags["socket:type2:output"] = f"{power:g} kW"
+            elif key == "chademo":
+                tags["socket:chademo:output"] = f"{power:g} kW"
+            elif key == "tesla":
+                tags["socket:tesla_supercharger:output"] = f"{power:g} kW"
+    if connector_counts.get("ccs"):
+        tags["socket:type2_combo"] = str(connector_counts["ccs"])
+        tags["socket:ccs"] = str(connector_counts["ccs"])
+    if connector_counts.get("type2"):
+        tags["socket:type2"] = str(connector_counts["type2"])
+    if connector_counts.get("chademo"):
+        tags["socket:chademo"] = str(connector_counts["chademo"])
+    if connector_counts.get("tesla"):
+        tags["socket:tesla_supercharger"] = str(connector_counts["tesla"])
+    if max_power is not None:
+        tags["max_power"] = f"{max_power:g} kW"
+        tags["charging_station:output"] = f"{max_power:g} kW"
+
+    try:
+        ocm_id = int(station.get("ID") or 0)
+    except (TypeError, ValueError):
+        ocm_id = 0
+    return {
+        "type": "ocm",
+        "id": ocm_id,
+        "lat": lat,
+        "lon": lon,
+        "tags": {k: v for k, v in tags.items() if v not in (None, "")},
+        "provider": "ocm",
+        "sources": "ocm",
+    }
+
+
+def _ocm_max_results(radius_km: int) -> int:
+    if radius_km <= 10:
+        return 2000
+    if radius_km <= 25:
+        return 4000
+    if radius_km <= 50:
+        return 7000
+    if radius_km <= 100:
+        return 12000
+    return 20000
+
+
+def _ocm_area_request_key(
+    api_key: str, lat: float, lon: float, radius_km: int, scope: str
+) -> tuple[Any, ...]:
+    fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
+    return (fingerprint, round(lat, 3), round(lon, 3), int(radius_km), scope)
+
+
+async def _async_fetch_ocm_area(
+    hass: HomeAssistant, api_key: str, lat: float, lon: float, radius_km: int,
+    msg: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    references, reference_warnings = await _async_get_ocm_references(hass, api_key)
+    compact = references is not None
+    session = async_get_clientsession(hass)
+    params = {
+        "output": "json",
+        "key": api_key,
+        "latitude": f"{lat:.6f}",
+        "longitude": f"{lon:.6f}",
+        "distance": str(radius_km),
+        "distanceunit": "KM",
+        "maxresults": str(_ocm_max_results(radius_km)),
+        "compact": "true" if compact else "false",
+        "verbose": "false",
+        "includecomments": "false",
+    }
+    # Targeted presets such as IONITY + CCS can be narrowed by stable OCM IDs.
+    # Power/text filtering still happens locally. This avoids downloading a
+    # huge all-networks result set only to discard almost everything.
+    params.update(_ocm_server_filter_params(references, msg))
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Cardata Analytics/0.1.34 (https://github.com/lemuba/cardata-analytics)",
+    }
+    async with asyncio.timeout(OCM_HTTP_TIMEOUT_SECONDS):
+        async with session.get(OCM_API_URL, params=params, headers=headers) as response:
+            body = await response.read()
+            if response.status in {401, 403} or b"REJECTED_APIKEY" in body[:2048].upper():
+                raise RuntimeError("Open Charge Map: API-Key wurde abgelehnt")
+            if response.status != 200:
+                raise RuntimeError(f"Open Charge Map: HTTP {response.status}")
+    try:
+        payload = json.loads(body)
+    except Exception as err:
+        raise RuntimeError("Open Charge Map: ungültige JSON-Antwort") from err
+    if not isinstance(payload, list):
+        raise RuntimeError("Open Charge Map: unerwartetes Antwortformat")
+    elements: list[dict[str, Any]] = []
+    for station in payload:
+        if not isinstance(station, dict):
+            continue
+        item = _ocm_station_to_element(station, references)
+        if item is not None:
+            elements.append(item)
+    return elements, reference_warnings
+
+
+async def _async_fetch_ocm_area_singleflight(
+    hass: HomeAssistant, api_key: str, lat: float, lon: float, radius_km: int,
+    msg: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Coalesce identical OCM area requests across cards/filter changes."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    inflight: dict[tuple[Any, ...], asyncio.Task[tuple[list[dict[str, Any]], list[str]]]] = (
+        domain_data.setdefault(DATA_OCM_AREA_INFLIGHT, {})
+    )
+    scope = _ocm_scope_signature(msg)
+    key = _ocm_area_request_key(api_key, lat, lon, radius_km, scope)
+    task = inflight.get(key)
+    if task is None or task.done():
+        task = hass.async_create_task(
+            _async_fetch_ocm_area(hass, api_key, lat, lon, radius_km, msg)
+        )
+        inflight[key] = task
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if inflight.get(key) is task and task.done():
+            inflight.pop(key, None)
+
+
+async def _async_get_ocm_area(
+    hass: HomeAssistant, msg: dict[str, Any]
+) -> tuple[list[dict[str, Any]], str, list[str], bool]:
+    enabled, api_key = _ocm_settings(hass)
+    if not enabled or not api_key:
+        return [], "Open Charge Map nicht konfiguriert", ["Open Charge Map: API-Key fehlt"], False
+
+    lat = float(msg["latitude"])
+    lon = float(msg["longitude"])
+    radius_km = int(msg["radius_km"])
+    force = bool(msg.get("force_refresh", False))
+    scope = _ocm_scope_signature(msg)
+    cache_path = _ocm_cache_path(hass)
+    cache = await hass.async_add_executor_job(_read_ocm_cache, cache_path)
+
+    if not force:
+        fresh = _select_ocm_cached_area(
+            cache, lat, lon, radius_km, max_age=OCM_CACHE_TTL_SECONDS, requested_scope=scope
+        )
+        if fresh is not None:
+            age_min = max(0, int((time.time() - float(fresh.get("fetched_at", 0))) / 60))
+            return list(fresh.get("elements") or []), f"Open Charge Map · Cache {age_min} Min.", [], True
+
+    try:
+        elements, fetch_warnings = await _async_fetch_ocm_area_singleflight(
+            hass, api_key, lat, lon, radius_km, msg
+        )
+        area = {
+            "latitude": lat,
+            "longitude": lon,
+            "radius_km": radius_km,
+            "scope": scope,
+            "fetched_at": time.time(),
+            "elements": elements,
+        }
+        domain_data = hass.data.setdefault(DOMAIN, {})
+        cache_lock = domain_data.get(DATA_OCM_CACHE_LOCK)
+        if cache_lock is None:
+            cache_lock = domain_data[DATA_OCM_CACHE_LOCK] = asyncio.Lock()
+        async with cache_lock:
+            # Re-read after the network request so concurrent searches for a
+            # different vehicle/area cannot overwrite each other's cache entry.
+            latest = await hass.async_add_executor_job(_read_ocm_cache, cache_path)
+            areas = [
+                item for item in latest.get("areas", [])
+                if not (
+                    isinstance(item, dict)
+                    and int(item.get("radius_km", 0) or 0) == radius_km
+                    and str(item.get("scope", "") or "") == scope
+                    and _ocm_area_distance_m(item, lat, lon) < 1000
+                )
+            ]
+            areas.append(area)
+            areas.sort(key=lambda item: float(item.get("fetched_at", 0.0)), reverse=True)
+            latest = {"version": OCM_CACHE_VERSION, "areas": areas[:OCM_CACHE_MAX_AREAS]}
+            await hass.async_add_executor_job(_write_ocm_cache, cache_path, latest)
+        source = "Open Charge Map · live kompakt" if not fetch_warnings else "Open Charge Map · live"
+        return elements, source, fetch_warnings, True
+    except Exception as err:
+        # Read the newest cache again because another shared request may have
+        # populated it while this request was waiting/failing.
+        cache = await hass.async_add_executor_job(_read_ocm_cache, cache_path)
+        stale = _select_ocm_cached_area(
+            cache, lat, lon, radius_km, max_age=OCM_CACHE_MAX_STALE_SECONDS, requested_scope=scope
+        )
+        if stale is not None:
+            age_h = max(1, int((time.time() - float(stale.get("fetched_at", 0))) / 3600))
+            return (
+                list(stale.get("elements") or []),
+                f"Open Charge Map · Cache {age_h} Std.",
+                [f"Open Charge Map aktuell nicht erreichbar – älterer Cache wird verwendet ({err})"],
+                True,
+            )
+        raise RuntimeError(str(err)) from err
+
+
 async def _async_collect_local_charging(
     hass: HomeAssistant, msg: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], list[str], list[str], bool, bool]:
-    """Return charging data from the persistent BNetzA bulk cache.
-
-    User requests never wait for a third-party charging API.  When the local
-    database does not exist yet, a single background download is started and the
-    frontend receives a short-lived ``building`` state instead of a timeout.
-    """
-    warnings: list[str] = []
-    sources: list[str] = []
-    provider_available = False
-    initializing = False
-
-    bnetza_dataset: dict[str, Any] = {"elements": []}
+    """Return Europe-wide charging data from Open Charge Map plus local cache."""
     try:
-        bnetza_dataset, bnetza_warnings = await _async_get_charging_dataset(
-            hass, "bnetza", wait_if_empty=False
-        )
-        warnings.extend(bnetza_warnings)
-        provider_available = bool(bnetza_dataset.get("elements"))
-        initializing = not provider_available
+        elements, source, warnings, available = await _async_get_ocm_area(hass, msg)
     except Exception as err:
-        warnings.append(f"Bundesnetzagentur: {err}")
-        initializing = True
-        try:
-            await _async_start_dataset_refresh(hass, "bnetza")
-        except Exception:
-            pass
+        return [], [], [f"Open Charge Map: {err}"], False, False
 
-    combined: list[dict[str, Any]] = []
-    if bnetza_dataset.get("elements"):
-        try:
-            filtered = await hass.async_add_executor_job(
-                _filter_charging_dataset, bnetza_dataset["elements"], msg
-            )
-            combined.extend(filtered)
-            sources.append("Bundesnetzagentur lokal")
-        except Exception as err:
-            warnings.append(f"Bundesnetzagentur lokal: Filterung fehlgeschlagen ({err})")
+    if not available:
+        return [], [source], warnings, False, False
 
-    return _merge_cross_provider_charging(combined), sources, warnings, provider_available, initializing
+    filtered = await hass.async_add_executor_job(_filter_charging_dataset, elements, msg)
+    return _merge_cross_provider_charging(filtered), [source], warnings, True, False
 
 
 async def async_warm_charging_sources(hass: HomeAssistant) -> None:
-    """Warm the authoritative BNetzA charging cache in the background."""
-    try:
-        bnetza = await _async_load_disk_dataset(hass, "bnetza")
-        bnetza_age = time.time() - float(bnetza.get("fetched_at", 0.0) or 0.0)
-        if not bnetza.get("elements") or bnetza_age > CHARGING_BNETZA_TTL_SECONDS:
-            await _async_start_dataset_refresh(hass, "bnetza")
-    except Exception:
-        _LOGGER.exception("Could not warm Cardata charging database")
+    """Compatibility no-op: OCM areas are loaded on demand from configured vehicle positions."""
+    return None
 
 
 def _normalized_identity_text(tags: dict[str, Any]) -> set[str]:
@@ -1353,11 +1966,9 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
             except Exception as err:
                 warnings.append(f"Overpass: {err}")
 
-        # Charging deliberately has no live OSM/Overpass fallback anymore.
-        # If the local BNetzA database is still being built, return quickly and
-        # let the frontend retry locally.  This makes charging searches immune to
-        # public-query timeouts and guarantees that IONITY is sourced from the
-        # official German register once initialization has completed.
+        # Charging deliberately has no Overpass fallback. Open Charge Map is the
+        # Europe-wide charging source; its persistent area cache provides stale
+        # fallback when the service is temporarily unavailable.
 
         combined = _merge_cross_provider_charging(combined)
         origin_lat = float(msg["latitude"])
@@ -1373,22 +1984,23 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
         max_results = int(msg["max_results"])
         combined = combined[: max_results * 2]
 
-        if (
-            not combined and warnings and not charging_provider_available and not sources
-            and not (charging_requested and charging_initializing)
-        ):
-            raise RuntimeError(" · ".join(warnings))
+        if not combined and warnings and not charging_provider_available and not sources:
+            _LOGGER.debug("Cardata general POI provider unavailable: %s", " · ".join(warnings))
 
-        charging_status = "ready" if charging_provider_available else ("building" if charging_requested else "unused")
+        ocm_enabled, ocm_key = _ocm_settings(hass) if charging_requested else (False, "")
+        charging_status = (
+            "ready" if charging_provider_available
+            else ("unavailable" if charging_requested and ocm_enabled and ocm_key else ("unconfigured" if charging_requested else "unused"))
+        )
         return {
             "elements": combined,
             "endpoint": " + ".join(dict.fromkeys(sources)) or (
-                "Ladesäulen-Datenbank wird aufgebaut" if charging_status == "building" else "Lokaler POI-Cache"
+                "Open Charge Map nicht konfiguriert" if charging_status == "unconfigured" else "Lokaler POI-Cache"
             ),
             "sources": list(dict.fromkeys(sources)),
             "warnings": warnings,
             "charging_status": charging_status,
-            "retry_after_seconds": 10 if charging_status == "building" else 0,
+            "retry_after_seconds": 0,
             "stored_at": time.monotonic(),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         }

@@ -11,7 +11,7 @@
       },
       "vehicle": {
         "title": "Vehicle sensors",
-        "description": "Select the vehicle's Home Assistant source sensors. The energy/capacity sensor must represent the battery's total usable capacity, not the current stored energy. For BEV, a fixed usable battery capacity can be entered instead. If latitude and longitude are configured, Cardata Analytics can resolve the current address through OpenStreetMap Nominatim and provides a Google Maps link without a Google API key.",
+        "description": "Select the vehicle's Home Assistant source sensors. The energy/capacity sensor must represent the battery's total usable capacity, not the current stored energy. For BEV, a fixed usable battery capacity can be entered instead. If latitude and longitude are configured, Cardata Analytics can resolve the current address through OpenStreetMap Nominatim and provides a Google Maps link without a Google API key. For Europe-wide charging stations, an Open Charge Map API key can be stored here; it remains in the Home Assistant backend and is not entered in the dashboard card.",
         "data": {
           "vehicle_name": "Vehicle name",
           "soc_entity": "State of charge sensor (SoC in %)",
@@ -21,12 +21,14 @@
           "soh_entity": "Battery health / SoH (optional)",
           "battery_capacity_kwh": "Usable battery capacity fallback (kWh)",
           "latitude_entity": "GPS latitude sensor (optional)",
-          "longitude_entity": "GPS longitude sensor (optional)"
+          "longitude_entity": "GPS longitude sensor (optional)",
+          "open_charge_map_enabled": "Use Open Charge Map for charging stations",
+          "open_charge_map_api_key": "Open Charge Map API key"
         }
       },
       "reconfigure": {
         "title": "Reconfigure Cardata Analytics",
-        "description": "Change source sensors or vehicle name. Optional GPS latitude/longitude sensors can be added or changed here.",
+        "description": "Change source sensors or vehicle name. Optional GPS latitude/longitude sensors can be added or changed here. The Open Charge Map API key can also be changed here.",
         "data": {
           "vehicle_name": "Vehicle name",
           "soc_entity": "State of charge sensor (SoC in %)",
@@ -36,13 +38,18 @@
           "soh_entity": "Battery health / SoH (optional)",
           "battery_capacity_kwh": "Usable battery capacity fallback (kWh)",
           "latitude_entity": "GPS latitude sensor (optional)",
-          "longitude_entity": "GPS longitude sensor (optional)"
+          "longitude_entity": "GPS longitude sensor (optional)",
+          "open_charge_map_enabled": "Use Open Charge Map for charging stations",
+          "open_charge_map_api_key": "Open Charge Map API key"
         }
       }
     },
     "error": {
       "capacity_source_required": "For BEV, select a usable-capacity sensor or enter a fixed usable battery capacity.",
-      "gps_pair_required": "Configure both latitude and longitude sensors, or leave both empty."
+      "gps_pair_required": "Configure both latitude and longitude sensors, or leave both empty.",
+      "ocm_key_required": "Enter an Open Charge Map API key or disable Open Charge Map.",
+      "ocm_invalid_key": "The Open Charge Map API key was rejected. Check the key.",
+      "ocm_cannot_connect": "Open Charge Map could not be reached to validate the key. Please try again later."
     },
     "abort": {
       "already_configured": "This vehicle is already configured.",

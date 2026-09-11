@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import asyncio
+import json
+
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_BATTERY_CAPACITY,
@@ -17,6 +21,8 @@ from .const import (
     CONF_LATITUDE_ENTITY,
     CONF_LONGITUDE_ENTITY,
     CONF_MILEAGE_ENTITY,
+    CONF_OCM_API_KEY,
+    CONF_OCM_ENABLED,
     CONF_RANGE_ENTITY,
     CONF_SOC_ENTITY,
     CONF_SOH_ENTITY,
@@ -25,6 +31,7 @@ from .const import (
     ENTRY_KIND_GLOBAL,
     ENTRY_KIND_VEHICLE,
     GLOBAL_ENTRY_UNIQUE_ID,
+    OCM_REFERENCE_URL,
     VEHICLE_GENERIC_BEV,
     VEHICLE_I3_120,
     VEHICLE_IX1,
@@ -68,9 +75,14 @@ class CardataAnalyticsConfigFlow(config_entries.ConfigFlow, domain="cardata_anal
 
         await self.async_set_unique_id(GLOBAL_ENTRY_UNIQUE_ID)
         self._abort_if_unique_id_configured()
+        data = {CONF_ENTRY_KIND: ENTRY_KIND_GLOBAL}
+        api_key = str(import_data.get(CONF_OCM_API_KEY, "") or "").strip()
+        if api_key:
+            data[CONF_OCM_ENABLED] = bool(import_data.get(CONF_OCM_ENABLED, True))
+            data[CONF_OCM_API_KEY] = api_key
         return self.async_create_entry(
             title="Cardata Analytics Vergleichszeitraum",
-            data={CONF_ENTRY_KIND: ENTRY_KIND_GLOBAL},
+            data=data,
         )
 
     async def async_step_vehicle(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -83,15 +95,30 @@ class CardataAnalyticsConfigFlow(config_entries.ConfigFlow, domain="cardata_anal
                 return self.async_abort(reason="already_configured")
 
             errors = self._validate_vehicle_input(vehicle_type, user_input)
+            ocm_enabled = bool(user_input.get(CONF_OCM_ENABLED, True))
+            ocm_key = str(user_input.get(CONF_OCM_API_KEY, "") or "").strip()
+            if not errors and ocm_enabled:
+                ocm_error = await self._validate_ocm_key(ocm_key)
+                if ocm_error:
+                    errors["base"] = ocm_error
             if not errors:
                 data = dict(user_input)
+                data[CONF_OCM_ENABLED] = ocm_enabled
+                data[CONF_OCM_API_KEY] = ocm_key
                 data[CONF_VEHICLE_TYPE] = vehicle_type
                 data[CONF_ENTRY_KIND] = ENTRY_KIND_VEHICLE
+                self._propagate_ocm_settings(ocm_enabled, ocm_key)
                 return self.async_create_entry(title=user_input[CONF_VEHICLE_NAME], data=data)
 
+        defaults = dict(user_input or {})
+        if not defaults.get(CONF_OCM_API_KEY):
+            existing_enabled, existing_key = self._current_ocm_settings()
+            defaults.setdefault(CONF_OCM_ENABLED, existing_enabled)
+            if existing_key:
+                defaults[CONF_OCM_API_KEY] = existing_key
         return self.async_show_form(
             step_id="vehicle",
-            data_schema=self._vehicle_schema(vehicle_type, defaults=user_input),
+            data_schema=self._vehicle_schema(vehicle_type, defaults=defaults),
             errors=errors,
         )
 
@@ -112,20 +139,90 @@ class CardataAnalyticsConfigFlow(config_entries.ConfigFlow, domain="cardata_anal
                 return self.async_abort(reason="already_configured")
 
             errors = self._validate_vehicle_input(vehicle_type, user_input)
+            ocm_enabled = bool(user_input.get(CONF_OCM_ENABLED, True))
+            ocm_key = str(user_input.get(CONF_OCM_API_KEY, "") or "").strip()
+            if not errors and ocm_enabled:
+                ocm_error = await self._validate_ocm_key(ocm_key)
+                if ocm_error:
+                    errors["base"] = ocm_error
             if not errors:
                 data = dict(user_input)
+                data[CONF_OCM_ENABLED] = ocm_enabled
+                data[CONF_OCM_API_KEY] = ocm_key
                 data[CONF_VEHICLE_TYPE] = vehicle_type
                 data[CONF_ENTRY_KIND] = ENTRY_KIND_VEHICLE
+                self._propagate_ocm_settings(ocm_enabled, ocm_key, exclude_entry_id=entry.entry_id)
                 if entry.title != user_input[CONF_VEHICLE_NAME]:
                     self.hass.config_entries.async_update_entry(entry, title=user_input[CONF_VEHICLE_NAME])
                 return self.async_update_reload_and_abort(entry, data_updates=data)
 
-        defaults = dict(entry.data) if user_input is None else user_input
+        defaults = dict(entry.data) if user_input is None else dict(user_input)
+        if not defaults.get(CONF_OCM_API_KEY):
+            existing_enabled, existing_key = self._current_ocm_settings()
+            defaults.setdefault(CONF_OCM_ENABLED, existing_enabled)
+            if existing_key:
+                defaults[CONF_OCM_API_KEY] = existing_key
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=self._vehicle_schema(vehicle_type, defaults=defaults),
             errors=errors,
         )
+
+    def _current_ocm_settings(self) -> tuple[bool, str]:
+        """Return integration-wide OCM settings from any existing entry."""
+        # Prefer the integration-managed global entry, then fall back to a vehicle
+        # entry for installations created before the global entry was set up.
+        entries = list(self._async_current_entries())
+        entries.sort(key=lambda item: 0 if item.data.get(CONF_ENTRY_KIND) == ENTRY_KIND_GLOBAL else 1)
+        for existing in entries:
+            key = str(existing.data.get(CONF_OCM_API_KEY, "") or "").strip()
+            if key:
+                return bool(existing.data.get(CONF_OCM_ENABLED, True)), key
+        return True, ""
+
+    def _propagate_ocm_settings(
+        self, enabled: bool, api_key: str, *, exclude_entry_id: str | None = None
+    ) -> None:
+        """Keep the one OCM credential synchronized across Cardata entries."""
+        for existing in self._async_current_entries():
+            if existing.entry_id == exclude_entry_id:
+                continue
+            data = dict(existing.data)
+            data[CONF_OCM_ENABLED] = bool(enabled)
+            data[CONF_OCM_API_KEY] = api_key
+            self.hass.config_entries.async_update_entry(existing, data=data)
+
+    async def _validate_ocm_key(self, api_key: str) -> str | None:
+        """Validate an Open Charge Map API key against the small reference endpoint."""
+        key = api_key.strip()
+        if not key:
+            return "ocm_key_required"
+        session = async_get_clientsession(self.hass)
+        try:
+            async with asyncio.timeout(15):
+                async with session.get(
+                    OCM_REFERENCE_URL,
+                    params={"key": key},
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "Cardata Analytics/0.1.34 (https://github.com/lemuba/cardata-analytics)",
+                    },
+                ) as response:
+                    body = await response.read()
+                    upper = body[:2048].upper()
+                    if response.status in {401, 403} or b"REJECTED_APIKEY" in upper:
+                        return "ocm_invalid_key"
+                    if response.status != 200:
+                        return "ocm_cannot_connect"
+                    try:
+                        payload = json.loads(body)
+                    except Exception:
+                        return "ocm_cannot_connect"
+                    if not isinstance(payload, dict) or not isinstance(payload.get("ConnectionTypes"), list):
+                        return "ocm_invalid_key"
+        except Exception:
+            return "ocm_cannot_connect"
+        return None
 
     def _find_duplicate(self, soc: str, mileage: str, exclude_entry_id: str | None = None) -> bool:
         """Reject duplicate vehicle entries using the same SoC and odometer pair."""
@@ -213,5 +310,16 @@ class CardataAnalyticsConfigFlow(config_entries.ConfigFlow, domain="cardata_anal
         # iX1 and generic BEVs an existing SoH sensor can be exposed optionally.
         if vehicle_type != VEHICLE_I3_120:
             schema_dict[optional_entity(CONF_SOH_ENTITY)] = sensor_selector
+
+        schema_dict[vol.Required(CONF_OCM_ENABLED, default=bool(defaults.get(CONF_OCM_ENABLED, True)))] = bool
+        ocm_key_default = str(defaults.get(CONF_OCM_API_KEY, "") or "")
+        ocm_key_field = (
+            vol.Optional(CONF_OCM_API_KEY, default=ocm_key_default)
+            if ocm_key_default
+            else vol.Optional(CONF_OCM_API_KEY)
+        )
+        schema_dict[ocm_key_field] = selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+        )
 
         return vol.Schema(schema_dict)
