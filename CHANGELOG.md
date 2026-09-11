@@ -1,6 +1,24 @@
 # Changelog
 
 
+## 0.1.23
+
+- Fixed POI coordinates from Overpass: switched from `out tags center` to `out center`, preserving latitude/longitude for node POIs while still adding centers for ways/relations.
+- Empty POI results are no longer cached in either the browser or the Home Assistant backend.
+- Added `overpass.kumi.systems` as a third automatic Overpass fallback.
+- Added an API-key-free default Satellite layer using Esri World Imagery, with visible source attribution; custom `satellite_url` / `satellite_attribution` still override it.
+- Kept Analytics, Daily Ledger and historical range calculation logic unchanged.
+
+## 0.1.22
+
+- Moved the default POI/Overpass network request from the Lovelace browser/Companion WebView to a Cardata Analytics Home Assistant websocket backend. This avoids browser-side CORS/WebView networking being a prerequisite for POI loading.
+- Added a small integration-level in-memory POI cache and serialized Overpass access in addition to the existing browser-local cache.
+- Kept the two conservative public Overpass fallbacks (`overpass-api.de`, then `overpass.private.coffee`) on the Home Assistant side and now returns the actual endpoint/error details to the map card.
+- Kept explicitly configured custom `overpass_url` values browser-direct instead of proxying arbitrary URLs through Home Assistant.
+- Kept the 2/5/10/25/50 km radii and pharmacy matching from 0.1.21.
+- Kept analytics, daily-ledger, date-range, GPS and vehicle calculations unchanged.
+
+
 ## 0.1.21
 
 - Fixed POI loading that could remain stuck indefinitely when an Overpass request stalled by adding a bounded client-side request timeout.

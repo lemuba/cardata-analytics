@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.21";
+const CARD_VERSION = "0.1.23";
 
 class CardataAnalyticsCard extends HTMLElement {
   constructor() {
@@ -1363,7 +1363,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
   }
 
   _poiCacheStorageKey() {
-    return `${this._storageKey}:poi-cache-v2`;
+    return `${this._storageKey}:poi-cache-v4`;
   }
 
   _readPoiCache() {
@@ -1421,6 +1421,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     if (configuredEndpoint) return [configuredEndpoint];
     return [
       "https://overpass-api.de/api/interpreter",
+      "https://overpass.kumi.systems/api/interpreter",
       "https://overpass.private.coffee/api/interpreter",
     ];
   }
@@ -1433,7 +1434,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     }
   }
 
-  async _fetchOverpass(query) {
+  async _fetchOverpassDirect(query) {
     const endpoints = this._overpassEndpoints();
     const failures = [];
     for (const endpoint of endpoints) {
@@ -1481,6 +1482,43 @@ class CardataAnalyticsMapCard extends HTMLElement {
     throw new Error(failures.length ? failures.join(" · ") : "Kein Overpass-Endpunkt verfügbar");
   }
 
+  async _fetchOverpass(vehicle, query) {
+    const configuredEndpoint = typeof this._config.overpass_url === "string"
+      ? this._config.overpass_url.trim()
+      : "";
+
+    // A deliberately configured custom endpoint stays browser-direct to avoid
+    // turning Home Assistant into an arbitrary server-side URL proxy.
+    if (configuredEndpoint) return this._fetchOverpassDirect(query);
+
+    if (!this._hass?.callWS) {
+      throw new Error("Home-Assistant-WebSocket ist nicht verfügbar");
+    }
+
+    try {
+      const result = await this._hass.callWS({
+        type: "cardata_analytics/poi",
+        latitude: vehicle.lat,
+        longitude: vehicle.lon,
+        radius_km: this._poiRadiusKm,
+        categories: [...this._poiCategories],
+        max_results: this._poiMaxResults,
+        timeout_seconds: Math.round(this._poiRequestTimeoutMs / 1000),
+      });
+      if (!result || !Array.isArray(result.elements)) {
+        throw new Error("ungültige Antwort vom Cardata-Analytics-Backend");
+      }
+      this._poiLastEndpoint = result.endpoint || "Home Assistant";
+      return { elements: result.elements };
+    } catch (err) {
+      const message = err?.message || String(err);
+      if (/unknown command|unknown_command|not found/i.test(message)) {
+        throw new Error("POI-Backend noch nicht aktiv – Home Assistant nach dem Update vollständig neu starten");
+      }
+      throw new Error(`Home-Assistant-POI-Proxy: ${message}`);
+    }
+  }
+
   async _loadPois(force = false) {
     const vehicle = this._selectedVehicle() || this._visibleVehicles()[0] || null;
     if (!this._poiCategories.size) {
@@ -1506,7 +1544,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
     if (!force) {
       const cache = this._readPoiCache();
       const cached = cache[cacheKey];
-      if (cached && Date.now() - Number(cached.timestamp) <= this._poiCacheTtlMs && Array.isArray(cached.results)) {
+      if (cached && Date.now() - Number(cached.timestamp) <= this._poiCacheTtlMs
+          && Array.isArray(cached.results) && cached.results.length > 0) {
         this._poiResults = cached.results;
         this._poiSourceVehicleId = vehicle.deviceId;
         this._poiSourceLat = vehicle.lat;
@@ -1538,7 +1577,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
 
     try {
       const query = this._buildOverpassQuery(vehicle);
-      const payload = await this._fetchOverpass(query);
+      const payload = await this._fetchOverpass(vehicle, query);
       if (token !== this._poiRequestToken) return;
       const seen = new Set();
       const results = [];
@@ -1582,7 +1621,11 @@ class CardataAnalyticsMapCard extends HTMLElement {
         : "";
       this._poiLoading = false;
       const cache = this._readPoiCache();
-      cache[cacheKey] = { timestamp: Date.now(), results: this._poiResults };
+      if (this._poiResults.length > 0) {
+        cache[cacheKey] = { timestamp: Date.now(), results: this._poiResults };
+      } else {
+        delete cache[cacheKey];
+      }
       this._writePoiCache(cache);
     } catch (err) {
       if (token !== this._poiRequestToken) return;
@@ -1836,20 +1879,36 @@ class CardataAnalyticsMapCard extends HTMLElement {
       const customAttribution = typeof this._config.satellite_attribution === "string" ? this._config.satellite_attribution.trim() : "";
       const validTemplate = /^https:\/\//i.test(customUrl)
         && ["{z}", "{x}", "{y}"].every((token) => customUrl.includes(token));
-      if (!validTemplate || !customAttribution) {
+
+      // A user-supplied provider still takes precedence. If only half of a
+      // custom provider is configured, surface the configuration error instead
+      // of silently falling back to another provider.
+      if (customUrl || customAttribution) {
+        if (!validTemplate || !customAttribution) {
+          return {
+            id: "satellite-custom-invalid",
+            url: null,
+            maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
+            attribution: "",
+            unavailableMessage: "Ungültige Satelliten-Konfiguration. satellite_url muss HTTPS mit {z}/{x}/{y} enthalten und satellite_attribution muss gesetzt sein.",
+          };
+        }
         return {
-          id: "satellite-unconfigured",
-          url: null,
+          id: `satellite-custom:${customUrl}`,
+          url: (z, x, y) => customUrl.split("{z}").join(String(z)).split("{x}").join(String(x)).split("{y}").join(String(y)),
           maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
-          attribution: "",
-          unavailableMessage: "Satellitenansicht ist nicht konfiguriert. Bitte satellite_url (HTTPS mit {z}/{x}/{y}) und satellite_attribution setzen.",
+          attribution: this._esc(customAttribution),
         };
       }
+
+      // Same key-free World Imagery tile endpoint used by the supplied Bosch
+      // eBike map card. Keep the provider replaceable through satellite_url /
+      // satellite_attribution and show the required imagery source attribution.
       return {
-        id: `satellite-custom:${customUrl}`,
-        url: (z, x, y) => customUrl.split("{z}").join(String(z)).split("{x}").join(String(x)).split("{y}").join(String(y)),
+        id: "satellite-esri-world-imagery",
+        url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
         maxZoom: Math.max(2, Math.min(22, Number(this._config.satellite_max_zoom) || 19)),
-        attribution: this._esc(customAttribution),
+        attribution: "Tiles © Esri · Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community",
       };
     }
     if (effectiveMode === "topo") {
@@ -2135,7 +2194,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     const count = this._poiResults.filter((poi) => this._poiCategories.has(poi.category)).length;
     const selected = [...this._poiCategories];
     const status = this._poiLoading
-      ? "POIs werden geladen …"
+      ? (this._config.overpass_url ? "POIs werden geladen …" : "POIs werden über Home Assistant geladen …")
       : this._poiError
         ? this._poiError
         : selected.length

@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.21 expands the separate interactive vehicle map:
+Version 0.1.23 expands the separate interactive vehicle map:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -183,7 +183,7 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 
 - OpenStreetMap street-map mode
 - OpenTopoMap topographic mode
-- **Satellite** mode with an explicitly configured, provider-capable HTTPS tile source
+- **Satellite** mode with API-key-free Esri World Imagery by default plus an optional provider-capable HTTPS override
 - GPS follow mode, which continuously recenters the map on the selected vehicle
 - Plus/minus zoom controls and mouse/touch panning
 - Fullscreen button with a CSS fullscreen fallback for clients where the browser Fullscreen API is unavailable
@@ -199,9 +199,15 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 
 #### Satellite layer
 
-The card includes a **Satellite** mode, but version 0.1.21 deliberately does **not** hard-code a third-party commercial satellite tile endpoint without credentials. Current mainstream high-resolution imagery services generally require an account/token and provider-specific attribution/usage terms; using undocumented Google tiles or assuming that a legacy unauthenticated endpoint is permanently permitted would not be a clean default.
+The card includes a **Satellite** mode that works without an API key by default using Esri World Imagery, matching the proven approach in the Bosch eBike map card supplied during development. The map displays the imagery attribution (Esri, Maxar, Earthstar Geographics and GIS User Community). This is an Esri service, not an OpenStreetMap satellite service, and remains subject to Esri's service/usage terms. A different provider can still be configured with `satellite_url`, `satellite_attribution` and optional `satellite_max_zoom`.
 
-Instead, the satellite layer is provider-capable and is configured explicitly in the Lovelace card:
+No Lovelace configuration is required for the default Satellite layer:
+
+```yaml
+type: custom:cardata-analytics-map-card
+```
+
+Optionally, the default can be replaced by another provider:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -210,13 +216,13 @@ satellite_attribution: Imagery © Your provider and its data suppliers
 satellite_max_zoom: 19
 ```
 
-`satellite_url` must be HTTPS and contain `{z}`, `{x}` and `{y}` placeholders. `satellite_attribution` is required and remains visible in the map. If either setting is missing or invalid, Satellite mode shows a clear configuration message instead of silently using an unofficial tile source. Provider access credentials, permitted use and exact attribution remain the responsibility of the configured provider/account.
+For a custom provider, `satellite_url` must be HTTPS and contain `{z}`, `{x}` and `{y}` placeholders, and `satellite_attribution` is required. If a partial/invalid custom configuration is supplied, Satellite mode shows a clear configuration message. Provider access credentials, permitted use and exact attribution remain the responsibility of the configured provider/account.
 
 #### Nearby POIs
 
 POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km, 25 km and 50 km**.
 
-Available filters in 0.1.21:
+Available filters in 0.1.23:
 
 - EV charging stations
 - Vehicle workshops / car repair
@@ -229,7 +235,7 @@ Available filters in 0.1.21:
 - Hospitals
 - Public toilets
 
-POIs are queried from OpenStreetMap through the public Overpass API only after POI filters are enabled. Cardata Analytics combines selected filters into one request, debounces filter changes, enforces a minimum delay between network requests, backs off after rate-limit responses, limits displayed results, and caches successful query results in browser-local storage for 15 minutes. This is designed for occasional personal dashboard use rather than continuous or high-volume POI harvesting.
+POIs are queried from OpenStreetMap through the public Overpass API only after POI filters are enabled. By default the Lovelace card sends the POI request to the Cardata Analytics backend over Home Assistant's existing websocket connection, and Home Assistant performs the external Overpass request. This avoids depending on third-party CORS or Companion WebView networking. Cardata Analytics combines selected filters into one request, debounces filter changes, serializes/rate-limits server-side access, limits displayed results, and caches successful results both in browser-local storage and briefly in Home Assistant memory. This is designed for occasional personal dashboard use rather than continuous or high-volume POI harvesting.
 
 For installations that prefer another Overpass provider or a self-hosted endpoint, the map card also accepts optional advanced settings:
 
@@ -241,7 +247,7 @@ poi_max_results: 500
 poi_request_timeout_seconds: 35
 ```
 
-`overpass_url` must use HTTPS. When `overpass_url` is omitted, the card first tries `overpass-api.de` and then `overpass.private.coffee` if the first request fails or times out. `poi_cache_minutes` is clamped to 5–120 minutes, `poi_max_results` to 50–1000, and `poi_request_timeout_seconds` to 15–90 seconds.
+`overpass_url` must use HTTPS. When `overpass_url` is omitted, Home Assistant performs the request server-side and first tries `overpass-api.de`, then `overpass.private.coffee` if the first request fails or times out. An explicitly configured custom `overpass_url` remains browser-direct by design, so the integration does not expose an arbitrary server-side URL proxy. `poi_cache_minutes` is clamped to 5–120 minutes, `poi_max_results` to 50–1000, and `poi_request_timeout_seconds` to 15–90 seconds.
 
 Nearby POIs are clustered automatically when several markers overlap at the current zoom level. Clicking a cluster zooms further in. Clicking an individual POI shows its category, available OSM address/details and straight-line distance from the selected vehicle. When present in OSM, the popup also includes opening hours, operator/brand, phone, website, access/fee information, capacity and charging-connector tags.
 
@@ -253,7 +259,7 @@ Every POI popup offers:
 
 Google Maps URLs do not require a Google API key. On iOS/Android, the universal Google Maps link can open the installed Google Maps app; otherwise it opens in a browser.
 
-The OSM, Topo and POI features contact public OpenStreetMap-related services from the browser. The required attribution is shown in the map or POI panel. Public services are best-effort and may rate-limit requests.
+The OSM and Topo tile layers contact public OpenStreetMap-related services from the browser. Default POI queries are sent through the Home Assistant backend; only an explicitly configured custom `overpass_url` is contacted directly by the browser. The required attribution is shown in the map or POI panel. Public services are best-effort and may rate-limit requests.
 
 The cards are registered as a Lovelace module resource automatically when Home Assistant uses storage mode.
 
