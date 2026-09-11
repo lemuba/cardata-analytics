@@ -108,14 +108,60 @@ POI_CLAUSES: dict[str, tuple[str, ...]] = {
     "charging": ('["amenity"="charging_station"]',),
     "fuel": ('["amenity"="fuel"]',),
     "workshop": ('["shop"="car_repair"]', '["craft"="car_repair"]'),
+    "car_wash": ('["amenity"="car_wash"]',),
+    "tyres": ('["shop"="tyres"]',),
+    "car_parts": ('["shop"="car_parts"]',),
+    "car_rental": ('["amenity"="car_rental"]',),
+    "parking": ('["amenity"="parking"]',),
+    "parking_garage": ('["amenity"="parking"]["parking"~"^(multi-storey|underground)$"]',),
+    "park_ride": ('["amenity"="parking"]["park_ride"~"^(yes|designated)$"]',),
     "restaurant": ('["amenity"="restaurant"]', '["amenity"="fast_food"]', '["amenity"="food_court"]'),
     "cafe": ('["amenity"="cafe"]',),
-    "parking": ('["amenity"="parking"]',),
+    "bakery": ('["shop"="bakery"]',),
+    "ice_cream": ('["amenity"="ice_cream"]', '["shop"="ice_cream"]'),
+    "bar_pub": ('["amenity"="bar"]', '["amenity"="pub"]'),
+    "biergarten": ('["amenity"="biergarten"]',),
     "supermarket": ('["shop"="supermarket"]',),
-    "hotel": ('["tourism"="hotel"]',),
+    "convenience": ('["shop"="convenience"]',),
+    "mall": ('["shop"="mall"]',),
+    "chemist": ('["shop"="chemist"]',),
+    "beverages": ('["shop"="beverages"]',),
     "pharmacy": ('["amenity"="pharmacy"]', '["healthcare"="pharmacy"]'),
     "hospital": ('["amenity"="hospital"]', '["healthcare"="hospital"]'),
+    "doctors": ('["amenity"="doctors"]', '["healthcare"="doctor"]'),
+    "dentist": ('["amenity"="dentist"]', '["healthcare"="dentist"]'),
+    "clinic": ('["amenity"="clinic"]', '["healthcare"="clinic"]'),
+    "veterinarian": ('["amenity"="veterinary"]',),
+    "hotel": ('["tourism"="hotel"]',),
+    "motel": ('["tourism"="motel"]',),
+    "hostel": ('["tourism"="hostel"]',),
+    "camping": ('["tourism"="camp_site"]',),
+    "caravan_site": ('["tourism"="caravan_site"]',),
     "toilets": ('["amenity"="toilets"]',),
+    "drinking_water": ('["amenity"="drinking_water"]',),
+    "rest_area": ('["highway"="rest_area"]', '["highway"="services"]'),
+    "picnic_site": ('["tourism"="picnic_site"]',),
+    "shower": ('["amenity"="shower"]',),
+    "atm": ('["amenity"="atm"]',),
+    "bank": ('["amenity"="bank"]',),
+    "post_office": ('["amenity"="post_office"]',),
+    "parcel_locker": ('["amenity"="parcel_locker"]',),
+    "railway_station": ('["railway"="station"]',),
+    "bus_station": ('["amenity"="bus_station"]',),
+    "airport": ('["aeroway"="aerodrome"]',),
+    "ferry_terminal": ('["amenity"="ferry_terminal"]',),
+    "taxi": ('["amenity"="taxi"]',),
+    "museum": ('["tourism"="museum"]',),
+    "attraction": ('["tourism"="attraction"]',),
+    "viewpoint": ('["tourism"="viewpoint"]',),
+    "castle": ('["historic"="castle"]',),
+    "monument": ('["historic"="monument"]', '["historic"="memorial"]'),
+    "zoo": ('["tourism"="zoo"]',),
+    "theme_park": ('["tourism"="theme_park"]',),
+    "swimming_pool": ('["leisure"="swimming_pool"]',),
+    "police": ('["amenity"="police"]',),
+    "fire_station": ('["amenity"="fire_station"]',),
+    "ambulance_station": ('["emergency"="ambulance_station"]',),
 }
 
 
@@ -241,11 +287,8 @@ def _cache_key(msg: dict[str, Any]) -> tuple[Any, ...]:
         int(msg["radius_km"]),
         tuple(sorted(set(msg["categories"]))),
         int(msg["max_results"]),
-        str(msg.get("search_filter", "")).strip().lower(),
-        str(msg.get("operator_filter", "")).strip().lower(),
-        str(msg.get("connector_filter", "any")),
-        int(msg.get("min_power_kw", 0)),
-        bool(msg.get("include_unknown_power", True)),
+        str(msg.get("operator_filter", "")).strip().lower() if "charging" in set(msg["categories"]) else "",
+        str(msg.get("connector_filter", "any")) if "charging" in set(msg["categories"]) else "any",
     )
 
 
@@ -323,7 +366,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.36 "
+                            "Cardata Analytics/0.1.37 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -987,7 +1030,7 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
             headers={
                 "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
                 "Accept-Encoding": "gzip",
-                "User-Agent": "Cardata Analytics/0.1.36 (https://github.com/lemuba/cardata-analytics)",
+                "User-Agent": "Cardata Analytics/0.1.37 (https://github.com/lemuba/cardata-analytics)",
             },
             allow_redirects=True,
         ) as response:
@@ -1019,7 +1062,7 @@ async def _async_discover_bnetza_csv_urls(hass: HomeAssistant) -> list[str]:
     for page_url in BNETZA_PAGE_URLS:
         try:
             async with asyncio.timeout(12.0):
-                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.36"}) as response:
+                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.37"}) as response:
                     if response.status != 200:
                         raise RuntimeError(f"HTTP {response.status}")
                     page = await response.text(errors="replace")
@@ -1075,7 +1118,7 @@ async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
                         headers={
                             "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
                             "Accept-Encoding": "identity",
-                            "User-Agent": "Cardata Analytics/0.1.36",
+                            "User-Agent": "Cardata Analytics/0.1.37",
                         },
                         allow_redirects=True,
                     ) as response:
@@ -1466,7 +1509,7 @@ async def _async_fetch_ocm_reference_data(
     session = async_get_clientsession(hass)
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.36 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.37 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_REFERENCE_HTTP_TIMEOUT_SECONDS):
         async with session.get(
@@ -1710,7 +1753,7 @@ async def _async_fetch_ocm_area(
     params.update(_ocm_server_filter_params(references, msg))
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.36 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.37 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_HTTP_TIMEOUT_SECONDS):
         async with session.get(OCM_API_URL, params=params, headers=headers) as response:
@@ -1948,6 +1991,10 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
         categories = list(msg["categories"])
         charging_requested = "charging" in categories
         general_categories = [category for category in categories if category != "charging"]
+        provider_msg = dict(msg)
+        provider_msg["search_filter"] = ""
+        provider_msg["min_power_kw"] = 0
+        provider_msg["include_unknown_power"] = True
         warnings: list[str] = []
         sources: list[str] = []
         combined: list[dict[str, Any]] = []
@@ -1961,7 +2008,7 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
                 general_categories,
                 int(msg["max_results"]),
                 int(msg["timeout_seconds"]),
-                str(msg.get("search_filter", "")),
+                "",  # text search is client-side so broad category caches are reusable
                 "",  # operator/network is charging-specific; never filter normal POIs
                 "any",
             )
@@ -1975,7 +2022,7 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
             (
                 charging_elements, charging_sources, charging_warnings,
                 charging_provider_available, charging_initializing,
-            ) = await _async_collect_local_charging(hass, msg)
+            ) = await _async_collect_local_charging(hass, provider_msg)
             combined.extend(charging_elements)
             sources.extend(charging_sources)
             warnings.extend(charging_warnings)

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.37
+
+- General POI text search is now purely local on the already loaded category/radius cache. Saved presets such as `Restaurants + Donalds` therefore behave exactly like loading Restaurants first and typing `Donalds` afterwards, without creating a second Overpass request/cache namespace.
+- POI network/cache scope is now based on vehicle position, radius and selected categories; charging operator/connector remain server-scoped for efficient OCM queries, while text/minimum-power/unknown-power filters remain local.
+- Expanded the selectable POI catalogue to 57 travel-relevant categories across Auto & Mobility, Food & Drink, Shopping, Health, Travel, Roadside, Services, Public Transport, Leisure and Emergency.
+- Added collapsible category groups and a category-search field so the expanded POI catalogue remains usable on desktop, iPad and iPhone.
+- Existing MapLibre marker/cluster/fullscreen architecture and analytics/ledger logic remain unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.37.js?v=0.1.37`.
+
 ## 0.1.36
 
 - Fixed **Fit all vehicles** after the MapLibre migration: the toolbar `Alle` action now uses MapLibre `fitBounds()` with panel-aware padding and reliably exits GPS follow before fitting.
