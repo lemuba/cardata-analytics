@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.28
+
+- Reworked POI loading into an explicit latest-request-wins state machine. A running Home Assistant websocket request is no longer invalidated by repeated HA state updates, GPS refreshes or UI re-renders; only one newest follow-up query is kept when filters/radius/vehicle change mid-request.
+- Fixed the race that could leave the POI panel permanently on “POIs werden … geladen” after one or two successful refreshes.
+- Added a frontend watchdog so a lost/stalled websocket reply cannot keep the POI UI busy indefinitely.
+- Added up to two bounded automatic retries for transient Overpass/network/busy errors while preserving the previous POI markers during refresh.
+- Reworked the backend Overpass failover to use one total request deadline instead of giving every fallback server the full timeout; dead endpoints therefore cannot accumulate multi-minute stalls.
+- Added endpoint health/cooldown tracking and last-success preference. Temporarily failing/rate-limited public instances are skipped for a cooling period instead of being retried on every request.
+- Updated public Overpass fallbacks to current global endpoints, preferring `overpass.private.coffee`, then `overpass-api.de`, with `overpass.osm.jp` and VK Maps as additional fallbacks.
+- Added same-query single-flight deduplication in Home Assistant, so multiple open dashboards requesting the same POIs share one Overpass network task instead of duplicating public API load.
+- Replaced the old global serialized POI lock with a bounded two-request semaphore plus queue timeout; one slow query can no longer create an unbounded backlog of stale requests.
+- POI success status now includes backend duration, making slow/failing requests easier to diagnose.
+- Kept the existing **2 / 5 / 10 / 25 / 50 / 100 / 150 / 200 km** radii, presets, filters, OpenFreeMap basemap, Satellite/Topo/GPS modes and all Analytics/Daily Ledger/range logic unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.28.js?v=0.1.28`.
+
 ## 0.1.27
 
 - Fixed POI refresh semantics: the manual **Aktualisieren** action now bypasses both the browser cache and the Home Assistant in-memory POI cache, so it performs a genuinely fresh Overpass request.
