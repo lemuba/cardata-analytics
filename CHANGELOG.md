@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.40
+
+- Hotfix: restore `custom:cardata-analytics-card` (the normal multi-vehicle analytics card).
+- Remove an accidental POI-template loader call that was inserted into the normal analytics card in 0.1.39; global POI templates remain active only in `custom:cardata-analytics-map-card`.
+- No Analytics, Ledger, period, GPS, OCM or POI-provider logic changes.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.40.js?v=0.1.40`.
+
 ## 0.1.39
 
 - Reworked the POI panel into a compact three-zone layout: sticky vehicle/template/category-search controls at the top, a dedicated scrollable category accordion in the middle, and always-available general search/charging/radius/actions/status controls at the bottom.
