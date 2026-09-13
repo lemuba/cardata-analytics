@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.43
+
+- Hotfix route map picking after a MapLibre/full-card rebuild: detach and clear the route click handler together with the destroyed map instance so the replacement map always binds a fresh handler.
+- Free map clicks in **Ziel auf Karte** mode now set the destination again after Home Assistant/card structure re-renders, while POI layer clicks keep priority and continue to open POI popups instead of creating a free map target.
+- No Analytics, Daily Ledger, OCM, POI-provider, range, vehicle-color or Google Maps route-handoff logic was changed.
+
 ## 0.1.42
 
 - Added optional route planning to `custom:cardata-analytics-map-card` with a live vehicle GPS position as route origin.
