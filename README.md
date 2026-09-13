@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.44 is the current separate interactive vehicle map:
+Version 0.1.45 is the current separate interactive vehicle map:
 
 
 ### Vehicle colors and remaining-range overlays
@@ -220,10 +220,15 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 - Optional **Route** planner with a live vehicle position as origin, up to three ordered POI intermediate stops, POI/map/address/saved-zone destinations, global route templates and direct Google Maps handoff/navigation
 - Route POI popups include an air-line distance/range hint; Google Maps remains responsible for the actual street route
 - Browser-local persistence for map mode, zoom, center, selected vehicle, vehicle visibility, range-overlay visibility, current route and current POI UI/filter state; custom POI templates, route templates and named destinations are stored globally in Home Assistant
+- POI 2.0 templates list only **Aktuelle Filter** plus custom global templates; built-in standard presets are no longer injected
+- Charging filters can combine multiple operators/networks and store that combination in a global POI template
+- Charging markers are colored deterministically by operator/network and show stable two-character labels; MapLibre clustering is tuned for large station sets
+- POI radius choices extend to 500/1000 km for Open Charge Map; general Overpass categories are protected at the existing 200-km maximum
+- POI search center can be the selected vehicle, the current route destination or the current MapLibre map center
 
 From **0.1.36**, OpenFreeMap, Topo and Satellite all run through the same MapLibre camera. The 0.1.36 map additionally uses MapLibre `fitBounds()` for the **Alle** vehicle action and Cardata CSS fullscreen so external navigation tabs do not collapse the large dashboard map when returning. Vehicle markers are MapLibre geographic markers and POIs are a clustered MapLibre GeoJSON source. Panning/zooming therefore moves basemap, vehicle positions, POIs and open popups in one projection instead of synchronizing independent HTML pixel overlays.
 
-Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** restored the normal multi-vehicle analytics card after a frontend regression. Version **0.1.41** adds stable per-vehicle colors, color-matched live remaining-range overlays, per-vehicle/global range toggles, and fit-to-range support. Version **0.1.42** adds local route planning with the selected vehicle as live GPS origin, up to three POI intermediate stops, a map-selected destination, Google Maps handoff/navigation and direct MapLibre `+` / `−` zoom control. Version **0.1.43** fixes free map destination picking after a MapLibre/full-card rebuild. Version **0.1.44** adds continuous GPS Follow plus global route templates, named destinations, Home Assistant zone targets and explicit address search.
+Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** restored the normal multi-vehicle analytics card after a frontend regression. Version **0.1.41** adds stable per-vehicle colors, color-matched live remaining-range overlays, per-vehicle/global range toggles, and fit-to-range support. Version **0.1.42** adds local route planning with the selected vehicle as live GPS origin, up to three POI intermediate stops, a map-selected destination, Google Maps handoff/navigation and direct MapLibre `+` / `−` zoom control. Version **0.1.43** fixes free map destination picking after a MapLibre/full-card rebuild. Version **0.1.44** adds continuous GPS Follow plus global route templates, named destinations, Home Assistant zone targets and explicit address search. Version **0.1.45** introduces POI 2.0: only current/custom global templates, multi-operator charging filters, deterministic operator-colored charging markers with abbreviations, OCM radii up to 1000 km with a 200-km Overpass safety cap, more aggressive clustering and selectable POI centers (vehicle, route destination or map center).
 
 `height` is optional and is specified in pixels. The default is `520`.
 
@@ -250,7 +255,7 @@ For a custom provider, `satellite_url` must be HTTPS and contain `{z}`, `{x}` an
 
 #### Nearby POIs
 
-POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The search is centred on the currently selected vehicle and supports radii of **2 km, 5 km, 10 km, 25 km, 50 km, 100 km, 150 km and 200 km**.
+POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The POI centre can be the currently selected vehicle, the current route destination or the current MapLibre map centre. Radius choices are **2 km, 5 km, 10 km, 25 km, 50 km, 100 km, 150 km, 200 km, 500 km and 1000 km**. Open Charge Map charging searches can use the full selected radius; general OSM/Overpass categories are protected at **200 km** even in a mixed search.
 
 Available POI categories in 0.1.37+ are grouped in the UI and can be searched by category name:
 
@@ -268,22 +273,22 @@ Available POI categories in 0.1.37+ are grouped in the UI and can be searched by
 POI filters in 0.1.37+ can be combined freely. In addition to category and radius, the panel supports:
 
 - a general free-text POI search across name, address, brand, operator and network
-- a charging-only operator/network filter such as `IONITY` or `Tesla`
+- multiple charging-only operator/network filters at the same time, for example `IONITY` + `EnBW` + `Tesla` (OR semantics)
 - charging connector filters for CCS, Type 2, CHAdeMO and Tesla connector tags
 - minimum charging power presets from 50 to 350 kW from normalized Open Charge Map connector data
 - an option to include or exclude charging sites whose power is unknown
-- built-in presets such as **IONITY Schnellladen**, **Schnellladen ≥100 kW**, **Tankstellen**, **Essen & Pause** and **Parken & Laden**
-- user-defined presets that can be saved, overwritten and deleted locally in the browser
+- only **Aktuelle Filter** plus user-defined global POI templates; the former built-in standard presets are no longer injected
+- user-defined templates that can be saved, overwritten and deleted globally in Home Assistant, including operator combinations and POI-centre mode
 
 When **Ladestationen** is switched off manually, Cardata clears the charging-specific operator/network, connector, power and unknown-power filters and also clears the previous charging text search. The operator/network filter is never applied to normal cafés, restaurants, fuel stations or other general POIs.
 
-Custom presets store the selected categories, radius, text/operator filters, connector, minimum power and unknown-power option. From **0.1.39** they are persisted integration-wide in Home Assistant `.storage`, so the same presets are available on desktop, iPad, iPhone and Companion App. Older browser-local presets are migrated once when the new backend becomes available. General free-text search is applied locally to the already loaded category/radius dataset, so loading a saved preset such as `Restaurants + Donalds` reuses the same restaurant cache as manual filtering and does not trigger another Overpass request.
+Custom templates store the selected categories, radius, general text filter, charging-operator combination, connector, minimum power, unknown-power option and POI-centre mode. From **0.1.39** they are persisted integration-wide in Home Assistant `.storage`, so the same templates are available on desktop, iPad, iPhone and Companion App. Older browser-local presets are migrated once when the backend becomes available, and v0.1.44 single-operator templates remain compatible. General free-text search is applied locally to the already loaded category/radius dataset, so changing the search text reuses the same cache and does not trigger another Overpass request.
 
-General non-charging POIs are queried from OpenStreetMap through public Overpass instances only after POI filters are enabled. The Lovelace card sends the request to Cardata Analytics over Home Assistant's websocket connection and Home Assistant performs the external query, so browser CORS/Companion WebView networking is not a prerequisite. The latest-request-wins state machine, watchdog, bounded retries, same-query single-flight deduplication, endpoint cooldowns and manual **Aktualisieren** cache bypass remain in place. Very broad 100–200 km searches still benefit from name/operator filters for these general Overpass POIs.
+General non-charging POIs are queried from OpenStreetMap through public Overpass instances only after POI filters are enabled. The Lovelace card sends the request to Cardata Analytics over Home Assistant's websocket connection and Home Assistant performs the external query, so browser CORS/Companion WebView networking is not a prerequisite. The latest-request-wins state machine, watchdog, bounded retries, same-query single-flight deduplication, endpoint cooldowns and manual **Aktualisieren** cache bypass remain in place. Very broad 100–200 km searches still benefit from the local general text filter without causing an additional Overpass request.
 
 From **0.1.33**, EV charging searches use **Open Charge Map** as the Europe-wide charging provider. The API key is requested in the Cardata Analytics installation/reconfigure flow and is stored only in the Home Assistant backend; no API key, provider URL or other charging configuration is required in Lovelace. Charging-only searches do not use Overpass, BNetzA, QLever or AFIR.
 
-Cardata normalizes the Open Charge Map station model into the existing POI model, including operator/network, address, connector types, charging power, capacity, status and provider attribution where supplied. This means existing filters such as **IONITY**, **Tesla**, **CCS**, minimum charging power and the **2 / 5 / 10 / 25 / 50 / 100 / 150 / 200 km** radius choices continue to work without card configuration changes.
+Cardata normalizes the Open Charge Map station model into the existing POI model, including operator/network, address, connector types, charging power, capacity, status and provider attribution where supplied. Charging searches support combined operator filters, deterministic operator-colored marker labels, connector/minimum-power filters and radii up to **500 / 1000 km** without additional Lovelace configuration.
 
 Open Charge Map area responses are persisted under Home Assistant `.storage` for six hours and may be reused as a stale fallback for up to seven days if the provider is temporarily unavailable. Filter changes within a cached area are therefore local and do not trigger another provider request. Manual **Aktualisieren** bypasses the fresh cache and requests a new Open Charge Map area. Public Overpass failures affect only general non-charging POIs.
 

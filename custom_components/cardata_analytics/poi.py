@@ -52,6 +52,9 @@ POI_SEMAPHORE_WAIT_SECONDS = 8.0
 POI_ENDPOINT_COOLDOWN_SECONDS = 60.0
 POI_ENDPOINT_RATE_LIMIT_COOLDOWN_SECONDS = 120.0
 POI_CHARGEPOINT_MERGE_RADIUS_M = 180.0
+POI_GENERAL_MAX_RADIUS_KM = 200
+POI_MAX_OPERATOR_FILTERS = 12
+POI_RADIUS_OPTIONS = (2, 5, 10, 25, 50, 100, 150, 200, 500, 1000)
 
 # Public Overpass instances. They remain the main source for general OSM POIs.
 # Charging stations additionally have independent fallbacks below.
@@ -280,15 +283,38 @@ def _build_overpass_query(
     )
 
 
+def _operator_filters(msg: dict[str, Any]) -> tuple[str, ...]:
+    """Return normalized charging-operator filters with legacy compatibility."""
+    raw = msg.get("operator_filters")
+    values: list[str] = []
+    if isinstance(raw, (list, tuple)):
+        values.extend(str(item).strip()[:80] for item in raw)
+    legacy = str(msg.get("operator_filter", "") or "").strip()[:80]
+    if legacy:
+        values.append(legacy)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.casefold()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+        if len(unique) >= POI_MAX_OPERATOR_FILTERS:
+            break
+    return tuple(sorted(unique))
+
+
 def _cache_key(msg: dict[str, Any]) -> tuple[Any, ...]:
+    charging_selected = "charging" in set(msg["categories"])
     return (
         round(float(msg["latitude"]), 3),
         round(float(msg["longitude"]), 3),
         int(msg["radius_km"]),
         tuple(sorted(set(msg["categories"]))),
         int(msg["max_results"]),
-        str(msg.get("operator_filter", "")).strip().lower() if "charging" in set(msg["categories"]) else "",
-        str(msg.get("connector_filter", "any")) if "charging" in set(msg["categories"]) else "any",
+        _operator_filters(msg) if charging_selected else (),
+        str(msg.get("connector_filter", "any")) if charging_selected else "any",
     )
 
 
@@ -366,7 +392,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.44 "
+                            "Cardata Analytics/0.1.45 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -1030,7 +1056,7 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
             headers={
                 "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
                 "Accept-Encoding": "gzip",
-                "User-Agent": "Cardata Analytics/0.1.44 (https://github.com/lemuba/cardata-analytics)",
+                "User-Agent": "Cardata Analytics/0.1.45 (https://github.com/lemuba/cardata-analytics)",
             },
             allow_redirects=True,
         ) as response:
@@ -1062,7 +1088,7 @@ async def _async_discover_bnetza_csv_urls(hass: HomeAssistant) -> list[str]:
     for page_url in BNETZA_PAGE_URLS:
         try:
             async with asyncio.timeout(12.0):
-                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.44"}) as response:
+                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.45"}) as response:
                     if response.status != 200:
                         raise RuntimeError(f"HTTP {response.status}")
                     page = await response.text(errors="replace")
@@ -1118,7 +1144,7 @@ async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
                         headers={
                             "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
                             "Accept-Encoding": "identity",
-                            "User-Agent": "Cardata Analytics/0.1.44",
+                            "User-Agent": "Cardata Analytics/0.1.45",
                         },
                         allow_redirects=True,
                     ) as response:
@@ -1252,8 +1278,8 @@ def _filter_charging_dataset(elements: list[dict[str, Any]], msg: dict[str, Any]
     lon = float(msg["longitude"])
     radius_km = int(msg["radius_km"])
     radius_m = radius_km * 1000.0
-    search = str(msg.get("search_filter", "")).strip().lower()
-    operator = str(msg.get("operator_filter", "")).strip().lower()
+    search = str(msg.get("search_filter", "")).strip().casefold()
+    operators = _operator_filters(msg)
     connector = str(msg.get("connector_filter", "any"))
     min_power = int(msg.get("min_power_kw", 0))
     include_unknown = bool(msg.get("include_unknown_power", True))
@@ -1276,13 +1302,13 @@ def _filter_charging_dataset(elements: list[dict[str, Any]], msg: dict[str, Any]
                 "name", "brand", "operator", "network", "ref:EU:EVSE",
                 "addr:street", "addr:postcode", "addr:city", "addr:full",
             )
-        ).lower()
+        ).casefold()
         operator_haystack = " ".join(
             str(tags.get(key, "")) for key in ("name", "brand", "operator", "network", "ref:EU:EVSE")
-        ).lower()
+        ).casefold()
         if search and search not in haystack:
             continue
-        if operator and operator not in operator_haystack:
+        if operators and not any(operator in operator_haystack for operator in operators):
             continue
         if not _charging_connector_present(tags, connector):
             continue
@@ -1376,13 +1402,13 @@ def _ocm_area_distance_m(area: dict[str, Any], lat: float, lon: float) -> float:
 
 def _ocm_scope_signature(msg: dict[str, Any]) -> str:
     """Return the server-side OCM subset represented by a cache entry."""
-    operator = str(msg.get("operator_filter", "") or "").strip().lower()[:80]
+    operators = _operator_filters(msg)
     connector = str(msg.get("connector_filter", "any") or "any").strip().lower()
     if connector == "any":
         connector = ""
     parts = []
-    if operator:
-        parts.append(f"operator={operator}")
+    if operators:
+        parts.append(f"operators={','.join(operators)}")
     if connector:
         parts.append(f"connector={connector}")
     return "|".join(parts)
@@ -1473,19 +1499,25 @@ def _ocm_server_filter_params(
     if not references:
         return {}
     params: dict[str, str] = {}
-    operator_filter = str(msg.get("operator_filter", "") or "").strip().lower()
-    if operator_filter:
+    operator_filters = _operator_filters(msg)
+    if operator_filters:
         operator_ids: list[int] = []
+        matched_filters: set[str] = set()
         for key, item in (references.get("Operators") or {}).items():
             if not isinstance(item, dict):
                 continue
-            title = str(item.get("Title", "") or "").lower()
-            if operator_filter in title:
+            title = str(item.get("Title", "") or "").casefold()
+            matching = [operator_filter for operator_filter in operator_filters if operator_filter in title]
+            if matching:
                 try:
                     operator_ids.append(int(key))
+                    matched_filters.update(matching)
                 except (TypeError, ValueError):
                     continue
-        if operator_ids:
+        # Only narrow the OCM request if every requested network resolved to at
+        # least one stable OCM operator ID. Otherwise fetch the broad area and
+        # apply the OR filter locally so an unknown alias cannot hide results.
+        if operator_ids and len(matched_filters) == len(operator_filters):
             params["operatorid"] = ",".join(str(item) for item in sorted(set(operator_ids)))
 
     connector_filter = str(msg.get("connector_filter", "any") or "any").strip().lower()
@@ -1509,7 +1541,7 @@ async def _async_fetch_ocm_reference_data(
     session = async_get_clientsession(hass)
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.44 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.45 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_REFERENCE_HTTP_TIMEOUT_SECONDS):
         async with session.get(
@@ -1753,7 +1785,7 @@ async def _async_fetch_ocm_area(
     params.update(_ocm_server_filter_params(references, msg))
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.44 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.45 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_HTTP_TIMEOUT_SECONDS):
         async with session.get(OCM_API_URL, params=params, headers=headers) as response:
@@ -2001,10 +2033,11 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
 
         general_task: asyncio.Task[tuple[list[dict[str, Any]], str]] | None = None
         if general_categories:
+            general_radius_km = min(int(msg["radius_km"]), POI_GENERAL_MAX_RADIUS_KM)
             query = _build_overpass_query(
                 float(msg["latitude"]),
                 float(msg["longitude"]),
-                int(msg["radius_km"]),
+                general_radius_km,
                 general_categories,
                 int(msg["max_results"]),
                 int(msg["timeout_seconds"]),
@@ -2149,12 +2182,16 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
         vol.Required("type"): WS_TYPE_POI,
         vol.Required("latitude"): vol.All(vol.Coerce(float), vol.Range(min=-90, max=90)),
         vol.Required("longitude"): vol.All(vol.Coerce(float), vol.Range(min=-180, max=180)),
-        vol.Required("radius_km"): vol.In([2, 5, 10, 25, 50, 100, 150, 200]),
+        vol.Required("radius_km"): vol.In(POI_RADIUS_OPTIONS),
         vol.Required("categories"): vol.All(
             [vol.In(tuple(POI_CLAUSES))], vol.Length(min=1, max=len(POI_CLAUSES))
         ),
         vol.Optional("search_filter", default=""): vol.All(str, vol.Length(max=80)),
         vol.Optional("operator_filter", default=""): vol.All(str, vol.Length(max=80)),
+        vol.Optional("operator_filters", default=[]): vol.All(
+            [vol.All(str, vol.Length(min=1, max=80))],
+            vol.Length(max=POI_MAX_OPERATOR_FILTERS),
+        ),
         vol.Optional("connector_filter", default="any"): vol.In(
             ["any", "ccs", "type2", "chademo", "tesla"]
         ),

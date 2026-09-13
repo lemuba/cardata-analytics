@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.45
+
+- POI 2.0 removes all built-in standard POI templates from the map UI. The selector now contains only **Aktuelle Filter** and user-created global templates stored in Home Assistant. Existing custom templates remain compatible.
+- Charging searches can combine up to 12 operators/networks at once (for example IONITY + EnBW + Tesla). The selection uses OR semantics, is persisted locally, is stored in global POI templates and is forwarded to Open Charge Map using stable operator IDs when all selected names can be resolved.
+- Charging-station markers now use deterministic operator/network colors with stable two-character labels such as **IO**, **EN** and **TS**. Generic operators receive a deterministic hash-based color and abbreviation, identical across devices.
+- POI radii now include **500 km** and **1000 km**. Open Charge Map can use the full selected radius; general OSM/Overpass categories keep the previous maximum of 200 km to prevent accidental continent-scale Overpass queries. Mixed searches therefore use the large radius for charging and a protected 200-km radius for general POIs.
+- Large charging result sets use more aggressive MapLibre clustering and keep charging labels inside the geographic marker layer. The existing configurable POI result cap remains authoritative, including for 500/1000-km searches.
+- POI center is now selectable between the current vehicle, the current route destination and the current map center. The selected center mode can be stored in global POI templates. Route-centered POIs refresh when the route destination changes.
+- The general POI search text remains a purely local client-side filter and is intentionally excluded from network/cache request keys, so typing or changing it does **not** trigger a new Overpass request.
+- Analytics, Daily Ledger, date/select/controller logic and existing vehicle/range calculations are unchanged. The protected files `controller.py`, `sensor.py`, `date.py`, `select.py` and `const.py` are byte-identical to 0.1.44.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.45.js?v=0.1.45`.
+
 ## 0.1.44
 
 - GPS **Follow** is now continuous: every vehicle GPS update recenters the active MapLibre camera on the followed vehicle while preserving the user's current zoom level. Mouse-wheel/pinch/+/- zoom keeps Follow active; deliberate user panning exits Follow.

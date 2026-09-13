@@ -25,7 +25,7 @@ WS_LIST = f"{DOMAIN}/poi_templates/list"
 WS_SAVE = f"{DOMAIN}/poi_templates/save"
 WS_DELETE = f"{DOMAIN}/poi_templates/delete"
 
-RADIUS_OPTIONS = [2, 5, 10, 25, 50, 100, 150, 200]
+RADIUS_OPTIONS = [2, 5, 10, 25, 50, 100, 150, 200, 500, 1000]
 POWER_OPTIONS = [0, 50, 100, 150, 200, 300, 350]
 CONNECTOR_OPTIONS = ["any", "ccs", "type2", "chademo", "tesla"]
 
@@ -37,10 +37,16 @@ _TEMPLATE_SCHEMA = vol.Schema(
         ),
         vol.Required("radiusKm"): vol.In(RADIUS_OPTIONS),
         vol.Optional("search", default=""): vol.All(str, vol.Length(max=80)),
+        # ``operator`` is kept for templates saved by <= 0.1.44. New templates
+        # use ``operators`` so multiple charging networks can be combined.
         vol.Optional("operator", default=""): vol.All(str, vol.Length(max=80)),
+        vol.Optional("operators", default=[]): vol.All(
+            [vol.All(str, vol.Length(min=1, max=80))], vol.Length(max=12)
+        ),
         vol.Optional("minPowerKw", default=0): vol.In(POWER_OPTIONS),
         vol.Optional("connector", default="any"): vol.In(CONNECTOR_OPTIONS),
         vol.Optional("includeUnknownPower", default=True): vol.Coerce(bool),
+        vol.Optional("centerMode", default="vehicle"): vol.In(["vehicle", "route", "map"]),
     },
     extra=vol.PREVENT_EXTRA,
 )
