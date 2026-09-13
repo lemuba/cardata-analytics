@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.43 is the current separate interactive vehicle map:
+Version 0.1.44 is the current separate interactive vehicle map:
 
 
 ### Vehicle colors and remaining-range overlays
@@ -184,10 +184,13 @@ Version 0.1.43 is the current separate interactive vehicle map:
 
 ### Route planning and Google Maps handoff
 
-- The **Route** toolbar button opens a local route planner. The origin is always the current GPS position of the selected Cardata vehicle.
+- The **Route** toolbar button opens the route planner. The origin is always the current GPS position of the selected Cardata vehicle.
 - Any currently visible POI can be added as an intermediate stop or destination. This includes Open Charge Map charging stations.
 - Up to three ordered intermediate stops are supported. Stops can be moved up/down or removed.
 - A destination can also be selected directly on the MapLibre map; on phones the route panel collapses to a compact picker while choosing the point.
+- Route templates can be saved globally in Home Assistant, reloaded on any device and deleted again. The stored template keeps the chosen start vehicle but never freezes its old coordinates.
+- Named destinations such as **HOME**, **Arbeit** or arbitrary custom places are stored globally, can be renamed/deleted, and can be inserted into a route. Existing Home Assistant `zone.*` entities are also offered as route targets.
+- An explicit address search is available in the route panel. The query is sent through the Home Assistant backend to Nominatim only when the user submits it; results can be used directly or saved globally under a custom name.
 - Cardata renders numbered route-point markers and can fit them together with the start vehicle, but intentionally does not draw a synthetic road line.
 - **Google Maps** and **Navigation** hand off origin, destination and ordered waypoints through standard Google Maps URLs; no Google API key is required by Cardata.
 - Air-line distance and remaining-range comparisons are guidance only. The actual road route and reachability are determined by Google Maps/navigation.
@@ -203,7 +206,7 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 - **OpenFreeMap Liberty street-map mode based on OpenStreetMap data**, rendered with MapLibre and requiring no API key
 - OpenTopoMap topographic mode
 - **Satellite** mode with API-key-free Esri World Imagery by default plus an optional provider-capable HTTPS override
-- GPS follow mode, which continuously recenters the map on the selected vehicle
+- GPS follow mode, which continuously recenters the map on every GPS update while preserving the chosen zoom; deliberate panning exits Follow, zooming does not
 - Plus/minus zoom controls and mouse/touch panning
 - Fullscreen button with a CSS fullscreen fallback for clients where the browser Fullscreen API is unavailable
 - Show/hide controls for every configured vehicle
@@ -214,13 +217,13 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 - Clickable vehicle markers with address, SoC, remaining range, odometer and GPS-age information
 - **Follow** action for an individual vehicle
 - **Google Maps** link from the vehicle popup
-- Optional **Route** planner with a live vehicle position as origin, up to three ordered POI intermediate stops, a POI or map-picked destination, route-point fit and direct Google Maps handoff/navigation
+- Optional **Route** planner with a live vehicle position as origin, up to three ordered POI intermediate stops, POI/map/address/saved-zone destinations, global route templates and direct Google Maps handoff/navigation
 - Route POI popups include an air-line distance/range hint; Google Maps remains responsible for the actual street route
-- Browser-local persistence for map mode, zoom, center, selected vehicle, vehicle visibility, range-overlay visibility, current route and current POI UI/filter state; custom POI templates are stored globally in Home Assistant from 0.1.39
+- Browser-local persistence for map mode, zoom, center, selected vehicle, vehicle visibility, range-overlay visibility, current route and current POI UI/filter state; custom POI templates, route templates and named destinations are stored globally in Home Assistant
 
 From **0.1.36**, OpenFreeMap, Topo and Satellite all run through the same MapLibre camera. The 0.1.36 map additionally uses MapLibre `fitBounds()` for the **Alle** vehicle action and Cardata CSS fullscreen so external navigation tabs do not collapse the large dashboard map when returning. Vehicle markers are MapLibre geographic markers and POIs are a clustered MapLibre GeoJSON source. Panning/zooming therefore moves basemap, vehicle positions, POIs and open popups in one projection instead of synchronizing independent HTML pixel overlays.
 
-Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** restored the normal multi-vehicle analytics card after a frontend regression. Version **0.1.41** adds stable per-vehicle colors, color-matched live remaining-range overlays, per-vehicle/global range toggles, and fit-to-range support. Version **0.1.42** adds local route planning with the selected vehicle as live GPS origin, up to three POI intermediate stops, a map-selected destination, Google Maps handoff/navigation and direct MapLibre `+` / `−` zoom control. Version **0.1.43** fixes free map destination picking after a MapLibre/full-card rebuild by rebinding the route click handler to the replacement map instance.
+Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** restored the normal multi-vehicle analytics card after a frontend regression. Version **0.1.41** adds stable per-vehicle colors, color-matched live remaining-range overlays, per-vehicle/global range toggles, and fit-to-range support. Version **0.1.42** adds local route planning with the selected vehicle as live GPS origin, up to three POI intermediate stops, a map-selected destination, Google Maps handoff/navigation and direct MapLibre `+` / `−` zoom control. Version **0.1.43** fixes free map destination picking after a MapLibre/full-card rebuild. Version **0.1.44** adds continuous GPS Follow plus global route templates, named destinations, Home Assistant zone targets and explicit address search.
 
 `height` is optional and is specified in pixels. The default is `520`.
 
@@ -362,7 +365,7 @@ Until Cardata Analytics is available in the default HACS repository list, add it
 
 Cardata Analytics performs its vehicle analytics calculations locally in Home Assistant and does not send data to the developer. It does not connect to a vehicle manufacturer directly; it only reads the source entities that already exist in your Home Assistant instance.
 
-If optional GPS latitude/longitude sources are configured, the integration sends the current coordinates to the public **OpenStreetMap Nominatim** service only when a reverse-geocoding lookup is required. Successful address results are cached locally in Home Assistant to minimize external requests. If GPS sources are not configured, Cardata Analytics makes no Nominatim requests.
+If optional GPS latitude/longitude sources are configured, the integration sends the current coordinates to the public **OpenStreetMap Nominatim** service only when a reverse-geocoding lookup is required. Successful address results are cached locally in Home Assistant to minimize external requests. From 0.1.44, the route panel can also send a user-entered address/placename to Nominatim when the user explicitly submits an address search; these searches share the same backend rate limiter and are cached in memory. If GPS sources are not configured and no address search is submitted, Cardata Analytics makes no Nominatim requests.
 
 The Google Maps URL is generated locally from the coordinates. Generating the link itself makes no Google request; Google receives the coordinates only when a user opens the link.
 

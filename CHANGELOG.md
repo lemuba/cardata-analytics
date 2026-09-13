@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.44
+
+- GPS **Follow** is now continuous: every vehicle GPS update recenters the active MapLibre camera on the followed vehicle while preserving the user's current zoom level. Mouse-wheel/pinch/+/- zoom keeps Follow active; deliberate user panning exits Follow.
+- Added global route templates stored in Home Assistant. The current route can be saved, loaded and deleted across desktop, iPhone/iPad and Companion App; route templates keep the selected start vehicle but always use its current live GPS coordinates.
+- Added global named destinations stored in Home Assistant. Current/map/POI/address destinations can be saved under arbitrary names such as HOME or Arbeit, renamed and deleted.
+- Home Assistant `zone.*` entities are exposed directly as selectable route destinations without duplicating their coordinates into Cardata storage.
+- Added explicit address search to the route panel through the Home Assistant backend. User-submitted searches are rate-limited/cached and use Nominatim; search results can be used immediately as a route destination or stored globally under a custom name.
+- Existing Google Maps handoff, three-waypoint limit, POI routing, map-picked destination and range hints remain unchanged.
+- No Analytics, Daily Ledger, OCM, POI-provider or vehicle/range calculation logic was changed.
+
 ## 0.1.43
 
 - Hotfix route map picking after a MapLibre/full-card rebuild: detach and clear the route click handler together with the destroyed map instance so the replacement map always binds a fresh handler.
