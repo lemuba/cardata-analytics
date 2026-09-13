@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.53
+
+- Fixed wide-radius general POI refreshes (for example Restaurants & Fast Food at 100 km) being reported as a misleading empty result when all Overpass endpoints timed out.
+- Existing POIs now remain visible when a general POI refresh fails.
+- Changing the radius while a general text search is active performs a targeted Overpass search for that text; typing itself remains purely local.
+- Increased the time available to the preferred healthy Overpass endpoint within the configured total request budget while retaining endpoint fallbacks.
+
 ## 0.1.52
 
 - Fixed general POI free-text searches losing nearby matches when a larger radius produced more results than `poi_max_results`.

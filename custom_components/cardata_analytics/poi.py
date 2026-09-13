@@ -393,7 +393,23 @@ async def _async_fetch_overpass(
         host = _endpoint_host(endpoint)
         endpoints_left = max(1, len(endpoints) - index)
         fair_share = remaining_total / endpoints_left
-        attempt_timeout = min(12.0, max(3.0, fair_share), max(1.0, remaining_total - 0.5))
+        # Give the currently preferred/first healthy endpoint enough time for
+        # wider (for example 100-200 km) general POI queries.  Older builds
+        # capped every individual attempt at 12 s, so a user configured 45 s
+        # budget could still fail repeatedly before a large Overpass query had
+        # a realistic chance to finish.  Keep a small reserve for fallbacks.
+        fallback_reserve = 5.0 * max(0, endpoints_left - 1)
+        max_for_attempt = max(3.0, remaining_total - fallback_reserve)
+        desired_attempt = (
+            min(25.0, max(10.0, float(timeout_seconds) * 0.55))
+            if index == 0
+            else max(5.0, fair_share)
+        )
+        attempt_timeout = min(
+            desired_attempt,
+            max_for_attempt,
+            max(1.0, remaining_total - 0.5),
+        )
         try:
             async with asyncio.timeout(attempt_timeout):
                 async with session.post(
@@ -402,7 +418,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.52 "
+                            "Cardata Analytics/0.1.53 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -1066,7 +1082,7 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
             headers={
                 "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
                 "Accept-Encoding": "gzip",
-                "User-Agent": "Cardata Analytics/0.1.52 (https://github.com/lemuba/cardata-analytics)",
+                "User-Agent": "Cardata Analytics/0.1.53 (https://github.com/lemuba/cardata-analytics)",
             },
             allow_redirects=True,
         ) as response:
@@ -1098,7 +1114,7 @@ async def _async_discover_bnetza_csv_urls(hass: HomeAssistant) -> list[str]:
     for page_url in BNETZA_PAGE_URLS:
         try:
             async with asyncio.timeout(12.0):
-                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.52"}) as response:
+                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.53"}) as response:
                     if response.status != 200:
                         raise RuntimeError(f"HTTP {response.status}")
                     page = await response.text(errors="replace")
@@ -1154,7 +1170,7 @@ async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
                         headers={
                             "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
                             "Accept-Encoding": "identity",
-                            "User-Agent": "Cardata Analytics/0.1.52",
+                            "User-Agent": "Cardata Analytics/0.1.53",
                         },
                         allow_redirects=True,
                     ) as response:
@@ -1551,7 +1567,7 @@ async def _async_fetch_ocm_reference_data(
     session = async_get_clientsession(hass)
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.52 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.53 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_REFERENCE_HTTP_TIMEOUT_SECONDS):
         async with session.get(
@@ -1795,7 +1811,7 @@ async def _async_fetch_ocm_area(
     params.update(_ocm_server_filter_params(references, msg))
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.52 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.53 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_HTTP_TIMEOUT_SECONDS):
         async with session.get(OCM_API_URL, params=params, headers=headers) as response:
@@ -2078,6 +2094,7 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
             sources.extend(charging_sources)
             warnings.extend(charging_warnings)
 
+        general_error: str | None = None
         if general_task is not None:
             try:
                 general_elements, endpoint = await general_task
@@ -2088,7 +2105,17 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
                 combined.extend(general_elements)
                 sources.append(_endpoint_host(endpoint))
             except Exception as err:
-                warnings.append(f"Overpass: {err}")
+                general_error = str(err)
+                warnings.append(f"Overpass: {general_error}")
+
+        # A failed general-only Overpass request must not look like a successful
+        # empty search.  The frontend deliberately keeps the last successful
+        # POIs visible on request errors; raising here lets that protection work
+        # instead of replacing useful 50-km results with a misleading 0-result
+        # set after a wider 100-km timeout.  Mixed charging/general searches can
+        # still return the independently available OCM data plus a warning.
+        if general_error and general_categories and not charging_requested:
+            raise RuntimeError(f"Overpass: {general_error}")
 
         # Charging deliberately has no Overpass fallback. Open Charge Map is the
         # Europe-wide charging source; its persistent area cache provides stale
