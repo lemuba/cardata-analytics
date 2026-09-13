@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.48
+
+- Route planning now supports up to 9 intermediate stops internally in Cardata, including map display, browser state and global route templates.
+- Google Maps handoff is device-aware: a conservative maximum of 3 intermediate stops is exported on mobile/iPhone/iPad-style devices, while desktop handoff can export up to 9.
+- From the 4th intermediate stop onward, the route panel shows a persistent compatibility notice so no waypoint is silently lost inside Cardata.
+- Address results, POIs and free map points all use the same 9-stop internal limit.
+- Existing v0.1.47 iPhone safe-area, fullscreen and mobile POI scrolling fixes are retained.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.48.js?v=0.1.48`.
+
+## 0.1.47
+
+- Mobile/iPhone fullscreen now respects safe-area insets and reserves a minimum top safety margin on narrow screens, keeping the fullscreen-exit control reachable around notches/Dynamic Island and Home Assistant webview chrome.
+- The mobile POI bottom sheet now uses one vertical touch-scroll surface for the complete panel. The nested category scroller is disabled on narrow screens so charging filters, radius/actions and the end of the POI menu remain reachable.
+- Address-search results can now be inserted directly as an intermediate stop in addition to being used as the final destination or saved globally.
+- Free MapLibre map points can now be chosen either as the next intermediate stop or as the final destination. The compact map-pick mode supports both actions while existing POI routing continues to work unchanged.
+- The existing maximum of three ordered intermediate stops is intentionally unchanged, including route templates, local persistence, map markers and Google Maps handoff.
+- Analytics, Daily Ledger, vehicle/range calculations and the protected files `controller.py`, `sensor.py`, `date.py`, `select.py` and `const.py` are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.47.js?v=0.1.47`.
+
 ## 0.1.46
 
 - Hotfix for vehicle-centered POIs disappearing during driving/route planning: GPS movement no longer clears the last successful POI layer merely because the rounded vehicle-center key changed by a few metres.

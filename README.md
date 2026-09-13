@@ -171,7 +171,7 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.46 is the current separate interactive vehicle map:
+Version 0.1.48 is the current separate interactive vehicle map:
 
 
 ### Vehicle colors and remaining-range overlays
@@ -186,11 +186,11 @@ Version 0.1.46 is the current separate interactive vehicle map:
 
 - The **Route** toolbar button opens the route planner. The origin is always the current GPS position of the selected Cardata vehicle.
 - Any currently visible POI can be added as an intermediate stop or destination. This includes Open Charge Map charging stations.
-- Up to three ordered intermediate stops are supported. Stops can be moved up/down or removed.
-- A destination can also be selected directly on the MapLibre map; on phones the route panel collapses to a compact picker while choosing the point.
+- Up to nine ordered intermediate stops are supported internally. Stops can be moved up/down or removed; from the 4th stop onward the UI warns that mobile Google Maps handoff uses only the first three stops.
+- Free points on the MapLibre map can be selected either as the next intermediate stop or as the final destination; on phones the route panel collapses to a compact picker while choosing the point.
 - Route templates can be saved globally in Home Assistant, reloaded on any device and deleted again. The stored template keeps the chosen start vehicle but never freezes its old coordinates.
 - Named destinations such as **HOME**, **Arbeit** or arbitrary custom places are stored globally, can be renamed/deleted, and can be inserted into a route. Existing Home Assistant `zone.*` entities are also offered as route targets.
-- An explicit address search is available in the route panel. The query is sent through the Home Assistant backend to Nominatim only when the user submits it; results can be used directly or saved globally under a custom name.
+- An explicit address search is available in the route panel. The query is sent through the Home Assistant backend to Nominatim only when the user submits it; results can be inserted as an intermediate stop, used as the final destination, or saved globally under a custom name.
 - Cardata renders numbered route-point markers and can fit them together with the start vehicle, but intentionally does not draw a synthetic road line.
 - **Google Maps** and **Navigation** hand off origin, destination and ordered waypoints through standard Google Maps URLs; no Google API key is required by Cardata.
 - Air-line distance and remaining-range comparisons are guidance only. The actual road route and reachability are determined by Google Maps/navigation.
@@ -208,7 +208,7 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 - **Satellite** mode with API-key-free Esri World Imagery by default plus an optional provider-capable HTTPS override
 - GPS follow mode, which continuously recenters the map on every GPS update while preserving the chosen zoom; deliberate panning exits Follow, zooming does not
 - Plus/minus zoom controls and mouse/touch panning
-- Fullscreen button with a CSS fullscreen fallback for clients where the browser Fullscreen API is unavailable
+- Fullscreen button with a CSS fullscreen fallback for clients where the browser Fullscreen API is unavailable, including iPhone safe-area handling so the exit control remains reachable
 - Show/hide controls for every configured vehicle
 - **Show all / hide all** vehicle controls
 - **Fit all visible vehicles** button
@@ -217,7 +217,7 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 - Clickable vehicle markers with address, SoC, remaining range, odometer and GPS-age information
 - **Follow** action for an individual vehicle
 - **Google Maps** link from the vehicle popup
-- Optional **Route** planner with a live vehicle position as origin, up to three ordered POI intermediate stops, POI/map/address/saved-zone destinations, global route templates and direct Google Maps handoff/navigation
+- Optional **Route** planner with a live vehicle position as origin, up to nine ordered intermediate stops from POIs/addresses/free map points, POI/map/address/saved-zone destinations, global route templates and device-aware Google Maps handoff/navigation (3 stops on mobile, up to 9 on desktop)
 - Route POI popups include an air-line distance/range hint; Google Maps remains responsible for the actual street route
 - Browser-local persistence for map mode, zoom, center, selected vehicle, vehicle visibility, range-overlay visibility, current route and current POI UI/filter state; custom POI templates, route templates and named destinations are stored globally in Home Assistant
 - POI 2.0 templates list only **Aktuelle Filter** plus custom global templates; built-in standard presets are no longer injected
@@ -228,7 +228,7 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 
 From **0.1.36**, OpenFreeMap, Topo and Satellite all run through the same MapLibre camera. The 0.1.36 map additionally uses MapLibre `fitBounds()` for the **Alle** vehicle action and Cardata CSS fullscreen so external navigation tabs do not collapse the large dashboard map when returning. Vehicle markers are MapLibre geographic markers and POIs are a clustered MapLibre GeoJSON source. Panning/zooming therefore moves basemap, vehicle positions, POIs and open popups in one projection instead of synchronizing independent HTML pixel overlays.
 
-Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** restored the normal multi-vehicle analytics card after a frontend regression. Version **0.1.41** adds stable per-vehicle colors, color-matched live remaining-range overlays, per-vehicle/global range toggles, and fit-to-range support. Version **0.1.42** adds local route planning with the selected vehicle as live GPS origin, up to three POI intermediate stops, a map-selected destination, Google Maps handoff/navigation and direct MapLibre `+` / `−` zoom control. Version **0.1.43** fixes free map destination picking after a MapLibre/full-card rebuild. Version **0.1.44** adds continuous GPS Follow plus global route templates, named destinations, Home Assistant zone targets and explicit address search. Version **0.1.45** introduces POI 2.0: only current/custom global templates, multi-operator charging filters, deterministic operator-colored charging markers with abbreviations, OCM radii up to 1000 km with a 200-km Overpass safety cap, more aggressive clustering and selectable POI centers (vehicle, route destination or map center). Version **0.1.46** keeps vehicle-centered POIs visible across normal GPS movement and during threshold-triggered refreshes, preventing the POI layer from disappearing while driving or planning a route.
+Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** restored the normal multi-vehicle analytics card after a frontend regression. Version **0.1.41** adds stable per-vehicle colors, color-matched live remaining-range overlays, per-vehicle/global range toggles, and fit-to-range support. Version **0.1.42** adds local route planning with the selected vehicle as live GPS origin, up to three POI intermediate stops, a map-selected destination, Google Maps handoff/navigation and direct MapLibre `+` / `−` zoom control. Version **0.1.43** fixes free map destination picking after a MapLibre/full-card rebuild. Version **0.1.44** adds continuous GPS Follow plus global route templates, named destinations, Home Assistant zone targets and explicit address search. Version **0.1.45** introduces POI 2.0: only current/custom global templates, multi-operator charging filters, deterministic operator-colored charging markers with abbreviations, OCM radii up to 1000 km with a 200-km Overpass safety cap, more aggressive clustering and selectable POI centers (vehicle, route destination or map center). Version **0.1.46** keeps vehicle-centered POIs visible across normal GPS movement and during threshold-triggered refreshes, preventing the POI layer from disappearing while driving or planning a route. Version **0.1.47** improves iPhone fullscreen/safe-area behavior, makes the complete mobile POI sheet vertically scrollable, and lets address results or free map points be inserted as intermediate stops. Version **0.1.48** raises Cardata route planning to nine internal intermediate stops and keeps all nine in templates/map state; Google Maps handoff uses a safe three-stop limit on mobile devices and up to nine on desktop, with an explicit warning from the fourth stop onward.
 
 `height` is optional and is specified in pixels. The default is `520`.
 

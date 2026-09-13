@@ -54,7 +54,7 @@ _ROUTE_TEMPLATE_SCHEMA = vol.Schema(
     {
         vol.Required("name"): vol.All(str, vol.Length(min=1, max=80)),
         vol.Optional("vehicleId", default=""): vol.All(str, vol.Length(max=160)),
-        vol.Optional("waypoints", default=[]): vol.All([_POINT_SCHEMA], vol.Length(max=3)),
+        vol.Optional("waypoints", default=[]): vol.All([_POINT_SCHEMA], vol.Length(max=9)),
         vol.Required("destination"): _POINT_SCHEMA,
     },
     extra=vol.PREVENT_EXTRA,
