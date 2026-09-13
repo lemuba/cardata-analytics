@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.51
+
+- Documentation/screenshots release based on the unchanged v0.1.50 runtime feature set.
+- Replaced the GitHub README with a current-state guide only: detailed HACS/manual installation, integration/vehicle setup, Analytics card, MapLibre vehicle map, POI 2.0, Open Charge Map/API-key setup, routing, persistence, localization, responsive/mobile behaviour, privacy and current limitations. Historical README material and obsolete legacy references are removed.
+- Added six repository-local screenshots under `docs/images/` covering the integration overview, vehicle setup/reconfigure flow, Analytics dashboard, vehicle map, POI management and route planning.
+- README explicitly notes that the screenshots are desktop captures while both custom cards are responsive and designed for smartphone/tablet use, including iPhone/iOS safe-area handling.
+- Runtime logic, Analytics, Daily Ledger, vehicle calculations, POI/routing behaviour and entity identities are unchanged from v0.1.50.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.51.js?v=0.1.51`.
+
 ## 0.1.50
 
 - Added complete first-step German/English localization across both custom cards: Analytics, vehicle/map controls, POI categories/filters/status, route planning, prompts, errors, tooltips and mobile/fullscreen UI.

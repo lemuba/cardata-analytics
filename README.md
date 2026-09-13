@@ -1,119 +1,251 @@
 # Cardata Analytics
 
-Cardata Analytics is a Home Assistant custom integration for analysing battery-electric vehicle data from existing sensor entities.
+Cardata Analytics is a Home Assistant custom integration for analysing battery-electric vehicle data that already exists as Home Assistant sensor entities.
 
-It tracks distance, estimated energy consumption and average consumption, provides configurable historical comparison periods, and includes an automatic dashboard card for all configured vehicles.
+It adds vehicle analytics, persistent comparison periods, an automatic multi-vehicle analytics card, and a MapLibre-based vehicle map with remaining-range overlays, POIs, charging-station search and route planning.
 
-## Features
+The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-- Supports multiple battery-electric vehicles (BEVs)
-- Manufacturer-neutral **BEV** setup option
-- Optional convenience presets for **BMW i3 120 Ah** and **BMW iX1**
-- Tracks:
-  - State of charge
-  - Odometer / mileage
-  - Remaining range, if available
-  - Usable battery capacity
-  - Estimated consumed energy
-  - Average consumption in kWh/100 km
-  - State of health, if available
-  - GPS latitude/longitude, if available
-  - Current address via OpenStreetMap Nominatim, if GPS is configured
-- Period statistics for:
-  - Today
-  - Week
-  - Month
-  - Year
-  - Custom comparison period
-- Shared comparison-period controls for all configured vehicles
-- Long-term statistics support through Home Assistant Recorder
-- Automatic Lovelace dashboard card
-- Responsive multi-vehicle layout
-- Designed to work with HACS
-- German/English UI localization for setup, entity names, Analytics card, Map/POI/routing card, notices, dates and number formatting; Home Assistant language is detected automatically and other languages currently fall back to English. The comparison-preset select keeps its legacy German raw option tokens for backward-compatible automations, while the Cardata cards display localized labels
+> **Current release:** v0.1.51  
+> **Home Assistant:** 2026.1.0 or newer  
+> **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-## Requirements
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI; v0.1.51 is a documentation/screenshots release and does not change the runtime feature set shown here.
 
-Cardata Analytics does not connect directly to a vehicle or manufacturer service.
+---
 
-The required vehicle data must already exist as sensor entities in Home Assistant, for example through another integration, MQTT, REST, CAN/OBD data, or another data source.
+## Highlights
 
-Each vehicle needs:
+- Multiple battery-electric vehicles in one integration
+- Manufacturer-neutral **BEV** setup plus convenience presets for **BMW i3 120 Ah** and **BMW iX1**
+- SoC, odometer, usable battery capacity, remaining range and optional SoH/GPS integration
+- Estimated energy consumption and average consumption in kWh/100 km
+- Today / week / month / year analytics
+- Persistent custom comparison periods with a compact daily ledger
+- Home Assistant long-term statistics support
+- Responsive automatic analytics card for all configured vehicles
+- Interactive **MapLibre** vehicle map
+- OpenFreeMap / OpenStreetMap, OpenTopoMap and Esri satellite layers
+- Multiple vehicles with deterministic colours and coloured markers
+- Live remaining-range rings per vehicle
+- Continuous GPS follow while keeping the selected zoom level
+- Frontend-only GPS movement information including average speed between valid GPS updates and direction
+- **57 POI categories** with clustering and local free-text filtering
+- **Open Charge Map** charging stations with operator, connector and power filters
+- Multiple charging operators selectable at the same time
+- POI search radius up to **1000 km for charging stations**
+- Global POI templates shared across devices
+- Route planning with live vehicle position as origin
+- Up to **9 internal intermediate stops**
+- POIs, address-search results and free map points can be used as intermediate stops or destinations
+- Global route templates and named destinations
+- Home Assistant `zone.*` entities as route targets
+- Google Maps / Navigation handoff
+- Responsive desktop, tablet and mobile UI including iPhone safe-area handling
 
-- **State of charge (SoC)** — expected as a percentage from 0 to 100
-- **Odometer / mileage**
-- **Usable battery capacity** — either from a sensor or, for a generic BEV, as a fixed value in kWh
+---
 
-Optional source data:
+## How Cardata Analytics works
 
-- Remaining range
-- State of health (SoH)
-- GPS latitude
-- GPS longitude
+Cardata Analytics reads the source entities you select during setup and creates its own calculated Home Assistant entities. Vehicle analytics are calculated locally inside Home Assistant.
 
-Distance values are normalized from `km`, `mi` or `m` to kilometres.
-
-Capacity values are normalized from `kWh`, `Wh` or `MWh` to kWh.
-
-## Vehicle setup
-
-The setup flow currently offers three vehicle types:
-
-- **BEV** — generic manufacturer-neutral battery-electric vehicle
-- **BMW i3 120 Ah** — convenience preset with built-in SoH estimation based on usable battery capacity
-- **BMW iX1** — convenience preset with optional source SoH sensor
-
-For most vehicles, use **BEV** and select the available source sensors manually.
-
-For a generic BEV, the vehicle name can be chosen freely. You can either select a sensor that represents the vehicle's **total usable battery capacity** or enter a fixed usable capacity in kWh.
-
-> Do not use a sensor that reports the battery's current stored energy as the usable battery capacity source. The integration needs the vehicle's total usable battery capacity for its consumption calculation.
-
-## Optional GPS and current address
-
-A vehicle can optionally be configured with a **latitude** and **longitude** sensor. Both sensors must be configured together. Existing vehicles can add or change these sources through Home Assistant's **Reconfigure** action for the Cardata Analytics config entry.
-
-When both coordinates are available, Cardata Analytics creates three additional vehicle sensors:
-
-- GPS Latitude
-- GPS Longitude
-- Current Address
-
-The address is resolved with the public **OpenStreetMap Nominatim** reverse-geocoding service. No API key is required. GPS coordinates are therefore sent to the public Nominatim service when an address lookup is required. Address data is attributed to **© OpenStreetMap contributors**.
-
-To use the public service responsibly, Cardata Analytics caches successful results, only performs a new lookup after the vehicle has moved at least approximately **100 metres**, limits each vehicle to at most one lookup every **5 minutes**, and serializes requests from all configured vehicles with a global interval above one second. A temporary geocoder or vehicle-cloud outage does not delete the last successfully resolved address.
-
-The Current Address sensor exposes additional attributes including structured address details, the last geocoded coordinates and timestamp, and a **Google Maps URL** built directly from the coordinates. Opening this URL does not require a Google Maps API key. The Google Maps link is used by the dashboard cards and can also be used in automations.
-
-Example attribute:
-
-```text
-google_maps_url: https://www.google.com/maps/search/?api=1&query=54.0032228%2C9.7693308
-```
-
-## Consumption calculation
-
-Cardata Analytics estimates consumed energy from falling SoC values and usable battery capacity:
+For consumption estimation, falling SoC is converted into consumed energy using the configured usable battery capacity:
 
 ```text
 consumed_kWh = (old_SoC - new_SoC) / 100 × usable_battery_capacity_kWh
 ```
 
-SoC increases are treated as charging and are not counted as consumption.
+SoC increases are treated as charging and are not counted as driving consumption.
 
-Average consumption is calculated as:
+Average consumption is calculated from estimated consumed energy and driven distance:
 
 ```text
 kWh_per_100km = consumed_kWh / driven_km × 100
 ```
 
-The quality of the result depends on the accuracy and update frequency of the source sensors.
+The quality of these values depends on the precision and update frequency of the source sensors. Cardata Analytics does not invent missing vehicle data.
 
-## Statistics and comparison periods
+---
 
-Cardata Analytics creates analytics for today, week, month and year, as well as a freely selectable comparison period.
+## Requirements
 
-The shared comparison-period device provides these presets:
+Cardata Analytics requires existing Home Assistant entities for the vehicle data.
+
+### Required for every vehicle
+
+| Source | Expected value |
+|---|---|
+| State of charge | Percentage from 0 to 100 |
+| Odometer / mileage | Distance sensor |
+| Usable battery capacity | Capacity sensor or a fixed kWh value for generic BEVs |
+
+### Optional
+
+| Source | Purpose |
+|---|---|
+| Remaining range | Range display, analytics-card information and map range ring |
+| State of health | Exposed as a Cardata SoH entity where supported |
+| GPS latitude | Vehicle position and map features |
+| GPS longitude | Vehicle position and map features |
+
+Latitude and longitude must always be configured together.
+
+Distance source units are normalized from `km`, `mi` or `m` to kilometres. Capacity values are normalized from `kWh`, `Wh` or `MWh` to kWh.
+
+---
+
+# Installation
+
+## HACS installation
+
+Cardata Analytics can be installed as a custom HACS integration.
+
+1. Open **HACS** in Home Assistant.
+2. Open the menu in HACS and select **Custom repositories**.
+3. Add the repository:
+
+   ```text
+   https://github.com/lemuba/cardata-analytics
+   ```
+
+4. Select **Integration** as the repository type.
+5. Search for **Cardata Analytics** in HACS and install it.
+6. Restart Home Assistant.
+7. Go to **Settings → Devices & services**.
+8. Select **Add integration**.
+9. Search for **Cardata Analytics**.
+
+## Manual installation
+
+Copy the complete integration directory:
+
+```text
+custom_components/cardata_analytics
+```
+
+into:
+
+```text
+/config/custom_components/cardata_analytics
+```
+
+Restart Home Assistant and add **Cardata Analytics** through **Settings → Devices & services → Add integration**.
+
+---
+
+# Integration setup
+
+## 1. Choose a vehicle type
+
+The setup flow offers three vehicle types:
+
+### BEV
+
+The manufacturer-neutral option and the recommended choice for most electric vehicles.
+
+You can either select a sensor that represents the vehicle's **total usable battery capacity** or enter a fixed usable capacity in kWh.
+
+If both are configured, the fixed value can also serve as a fallback when the live capacity source is unavailable.
+
+### BMW i3 120 Ah
+
+Convenience preset with a required usable HV-capacity sensor and built-in SoH estimation based on the configured usable battery capacity.
+
+### BMW iX1
+
+Convenience preset with a required usable HV-capacity sensor and optional source SoH sensor.
+
+> The capacity source must represent the battery's **total usable capacity**, not the energy currently stored in the battery.
+
+## 2. Select the source entities
+
+For each vehicle configure:
+
+- vehicle name
+- SoC sensor
+- odometer sensor
+- usable battery-capacity sensor or fixed capacity where applicable
+- optional remaining-range sensor
+- optional SoH sensor where applicable
+- optional GPS latitude and longitude sensors
+- Open Charge Map usage and API key
+
+You can add any number of vehicles by running **Add integration → Cardata Analytics** again.
+
+## 3. Reconfigure an existing vehicle
+
+Open the Cardata Analytics integration entry in **Settings → Devices & services** and use **Reconfigure** to change source entities, vehicle name, GPS sources or the Open Charge Map setting/API key.
+
+Existing Cardata entity identities remain stable when source entities are reconfigured.
+
+### Integration and vehicle setup screenshots
+
+| Integration overview | Vehicle setup / reconfigure |
+|---|---|
+| ![Cardata Analytics integration overview with configured vehicles](docs/images/integration-overview.png) | ![Cardata Analytics vehicle setup and reconfigure dialog](docs/images/integration-setup.png) |
+
+---
+
+# Open Charge Map for charging stations
+
+Cardata Analytics deliberately uses **Open Charge Map (OCM)** for charging-station POIs instead of treating charging stations as just another general OpenStreetMap/Overpass category.
+
+Open Charge Map is a community-driven, non-commercial charging-location project with a dedicated API and structured EV-charging data. Its API can provide information that is especially useful for an EV map, including operator/network, connection types, charging power, status, address and capacity where available.
+
+This separation has several advantages for Cardata Analytics:
+
+- charging-station searches are independent from public Overpass availability
+- large charging searches can use radii of **500 km or 1000 km** without sending an equivalent general-purpose Overpass query
+- operator/network filters can be combined, for example **IONITY + EnBW + Tesla**
+- connector and minimum-power filters can be applied to normalized charging data
+- operator colours and two-character labels can be shown consistently on the map
+- charging results can be cached independently from normal OSM POIs
+
+General POIs such as restaurants, parking, hotels, pharmacies or service stations continue to use OpenStreetMap data through public Overpass instances. Their radius is protected at a maximum of **200 km**.
+
+## Open Charge Map API key
+
+A **free Open Charge Map API key** is required when OCM charging-station support is enabled.
+
+1. Create or sign in to an account at [openchargemap.io](https://openchargemap.io/).
+2. Open your profile and go to **My Apps**.
+3. Register an application and obtain your API key.
+4. Enter the key in the Cardata Analytics setup or **Reconfigure** flow.
+
+Useful Open Charge Map links:
+
+- [Open Charge Map developer information](https://openchargemap.io/develop)
+- [Open Charge Map API documentation](https://openchargemap.io/develop/api)
+- [Open Charge Map registration](https://openchargemap.io/loginprovider/register)
+
+The key is stored in the **Home Assistant backend** and is not entered into the Lovelace card. Cardata Analytics validates the key during setup and keeps the same OCM configuration synchronized across its integration entries.
+
+Open Charge Map is an external community service. Charging-location data can originate from different providers and community contributions, so completeness and accuracy cannot be guaranteed. Cardata Analytics displays provider attribution where available.
+
+---
+
+# Home Assistant entities and analytics
+
+Each configured vehicle receives Cardata Analytics entities for the available/calculated data, including:
+
+- state of charge
+- odometer
+- usable battery capacity
+- total estimated consumed energy
+- distance and estimated consumed energy for today
+- average consumption for today
+- distance, energy and average consumption for week, month and year
+- selected-period distance, energy and average consumption
+- remaining range when configured
+- SoH when available/supported
+- GPS latitude and longitude when configured
+- current address when GPS is configured
+
+## Comparison periods
+
+Cardata Analytics creates one integration-wide comparison-period control shared by all configured vehicles.
+
+Available presets are displayed as:
 
 - Custom
 - Today
@@ -122,79 +254,71 @@ The shared comparison-period device provides these presets:
 - Last month
 - Last year
 
-The end date is inclusive.
+A custom from/to date range can also be selected. The end date is inclusive.
 
-For reliable custom date ranges, Cardata Analytics stores one compact daily history entry per vehicle and completed local calendar day. Each entry contains only the driven distance and estimated consumed energy for that day. The current day is always read from the live analytics counters.
+### Persistent daily ledger
 
-This means a range covering yesterday and today is calculated as **yesterday's stored daily total + today's live total**, while selecting only yesterday returns only yesterday's stored daily total. The daily ledger is persistent and intentionally small, so it can retain many years of selected-range history without depending on Recorder aggregation timing. Selected-range sensor values are derived from the currently active date controls whenever Home Assistant reads them, so changing the range cannot leave a cached result from the previous selection behind.
+For reliable historical ranges, Cardata Analytics maintains a compact local daily ledger per vehicle. Completed days store the driven distance and estimated consumed energy required for selected-range calculations, while the current day continues to use live values.
 
-The ledger also tracks whether a completed day is trustworthy. If Home Assistant was offline across midnight and the exact day boundary cannot be reconstructed, that day is marked incomplete instead of silently assigning today's odometer value to yesterday.
+The ledger is designed to stay small and persistent even over long periods.
 
-Cardata Analytics also includes a manufacturer-neutral **historical-day recovery** mechanism. If exactly one completed day in the current week, month or year is missing, incomplete, or conflicts with the still-available aggregate counters, the integration can reconstruct that day from the unassigned aggregate residual. Recovery is deliberately conservative: if two or more days are ambiguous, Cardata Analytics does not guess how the total should be distributed. Recovered entries keep provenance metadata so the repair remains transparent.
-
-Home Assistant long-term statistics are still generated by the cumulative analytics sensors and remain available independently for graphs, statistics cards and other Home Assistant history features.
+If Home Assistant was offline around a day boundary and the exact result cannot be reconstructed safely, Cardata Analytics marks the day incomplete instead of silently guessing values. A conservative recovery mechanism can reconstruct a single unambiguous missing day when aggregate counters provide enough information.
 
 ### Temporary source outages
 
-If the configured odometer source temporarily becomes `unavailable` (for example during a manufacturer server outage), Cardata Analytics keeps the **last valid odometer value** and continues using it until the source returns. This prevents current distance and selected-period analytics from disappearing simply because the upstream service is temporarily offline.
+If a configured odometer source temporarily becomes unavailable, Cardata Analytics keeps the last valid odometer reading instead of making the analytics disappear. It does not estimate missing driving distance; the value catches up when the upstream source becomes valid again.
 
-The fallback does not estimate or invent missing driving distance. The odometer is frozen at the last valid reading during the outage and catches up automatically when a new valid source value arrives. The mileage sensor exposes diagnostic attributes showing whether the live source is available and whether a last-known value is currently being used.
+---
 
-When the upstream source later provides enough aggregate evidence to identify exactly one affected historical day, the historical-day recovery described above can repair that ledger entry. If the outage leaves more than one day ambiguous, or the manufacturer never reports enough information to derive the missing values safely, those days remain incomplete rather than being guessed.
+# Dashboard cards
 
-Coverage is evaluated separately for each vehicle from the vehicle's actual daily ledger. Every historical calendar day requested by the selected range must exist as a complete ledger entry; a config-entry or tracking timestamp alone is not treated as proof that historical data exists. If any requested historical day is missing, the dashboard does **not** present the available overlap as the result for the whole requested range. The selected-period values are shown as unavailable (`—`) and the card displays a per-vehicle coverage warning including the number of covered historical days. Any calculable overlap is retained only as diagnostic sensor attributes (`partial_distance_km`, `partial_energy_kwh`, `partial_average_consumption`).
+Cardata Analytics ships both dashboard cards inside the integration. No separate frontend repository is required.
 
-## Dashboard cards
+When Home Assistant uses Lovelace **storage mode**, Cardata Analytics registers and updates its module resource automatically.
 
-Cardata Analytics includes two Lovelace cards. Both are registered from the same frontend module and automatically discover Cardata Analytics vehicles, so no hard-coded entity IDs are required.
+If Lovelace resources are managed in YAML mode, add the current module manually:
 
-### Analytics card
+```yaml
+resources:
+  - url: /cardata_analytics/cardata-analytics-card-0.1.51.js?v=0.1.51
+    type: module
+```
+
+After installing or updating Cardata Analytics, restart Home Assistant and reload the browser or Companion App.
+
+---
+
+## Analytics card
+
+Add a **Manual** card to your dashboard:
 
 ```yaml
 type: custom:cardata-analytics-card
 ```
 
-The analytics card automatically expands when additional vehicles are added and provides:
+The Analytics card discovers all configured Cardata Analytics vehicles automatically.
 
-- Vehicle overview
-- SoC and optional SoH
-- Remaining range
-- Battery capacity
-- Odometer
-- Total estimated energy consumption
-- Today / week / month / year statistics
-- Custom comparison-period values
-- Shared date and preset controls
-- Current vehicle address when GPS is configured
-- **Google Maps** button next to the current address
-- GPS location freshness such as “Standort vor 8 Min. aktualisiert”
-- No empty/error location row when GPS/address data is unavailable
+### Analytics card features
 
-### Vehicle map card
+- responsive multi-vehicle layout
+- current SoC, odometer and remaining range
+- usable battery capacity and SoH when available
+- current address and Google Maps access when GPS is configured
+- today / week / month / year distance and consumption analytics
+- selected comparison-period analytics
+- shared preset and date controls
+- local coverage/incomplete-history information where relevant
+- German/English labels, dates and number formatting following Home Assistant language settings
 
-Version 0.1.50 is the current separate interactive vehicle map:
+No vehicle entity IDs need to be entered in the Lovelace YAML.
 
+![Cardata Analytics dashboard with multi-vehicle analytics and vehicle map](docs/images/analytics-dashboard.png)
 
-### Vehicle colors and remaining-range overlays
+---
 
-- Every vehicle gets a deterministic, stable color derived from its Home Assistant device ID. The same vehicle therefore keeps the same color on desktop, iPhone and iPad.
-- The vehicle pin, vehicle-panel color indicator and remaining-range overlay use the same color.
-- Remaining range is drawn as a geodesic air-line radius around the live GPS position. It follows GPS changes and shrinks/grows whenever the range sensor changes.
-- Range overlays can be enabled per vehicle, toggled globally from the map toolbar, and fitted with the `Bereich` / `Alle + Reichweite` actions.
-- Range circles are a visual air-line estimate, not a street-routing reachable-area calculation.
+## Vehicle map card
 
-### Route planning and Google Maps handoff
-
-- The **Route** toolbar button opens the route planner. The origin is always the current GPS position of the selected Cardata vehicle.
-- Any currently visible POI can be added as an intermediate stop or destination. This includes Open Charge Map charging stations.
-- Up to nine ordered intermediate stops are supported internally. Stops can be moved up/down or removed; from the 4th stop onward the UI warns that mobile Google Maps handoff uses only the first three stops.
-- Free points on the MapLibre map can be selected either as the next intermediate stop or as the final destination; on phones the route panel collapses to a compact picker while choosing the point.
-- Route templates can be saved globally in Home Assistant, reloaded on any device and deleted again. The stored template keeps the chosen start vehicle but never freezes its old coordinates.
-- Named destinations such as **HOME**, **Arbeit** or arbitrary custom places are stored globally, can be renamed/deleted, and can be inserted into a route. Existing Home Assistant `zone.*` entities are also offered as route targets.
-- An explicit address search is available in the route panel. The query is sent through the Home Assistant backend to Nominatim only when the user submits it; results can be inserted as an intermediate stop, used as the final destination, or saved globally under a custom name.
-- Cardata renders numbered route-point markers and can fit them together with the start vehicle, but intentionally does not draw a synthetic road line.
-- **Google Maps** and **Navigation** hand off origin, destination and ordered waypoints through standard Google Maps URLs; no Google API key is required by Cardata.
-- Air-line distance and remaining-range comparisons are guidance only. The actual road route and reachability are determined by Google Maps/navigation.
+Add a second **Manual** card:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -202,50 +326,57 @@ title: Cardata Vehicle Map
 height: 520
 ```
 
-The map automatically includes every configured vehicle that has Cardata Analytics latitude and longitude sensors. It provides:
+The map automatically discovers every configured Cardata vehicle that has both latitude and longitude entities.
 
-- **OpenFreeMap Liberty street-map mode based on OpenStreetMap data**, rendered with MapLibre and requiring no API key
-- OpenTopoMap topographic mode
-- **Satellite** mode with API-key-free Esri World Imagery by default plus an optional provider-capable HTTPS override
-- GPS follow mode, which continuously recenters the map on every GPS update while preserving the chosen zoom; deliberate panning exits Follow, zooming does not
-- Plus/minus zoom controls and mouse/touch panning
-- Responsive two-row map controls on narrow dashboard cards so every action remains directly reachable without hidden horizontal scrolling
-- Fullscreen button with a CSS fullscreen fallback for clients where the browser Fullscreen API is unavailable, including iPhone safe-area handling so the exit control remains reachable
-- Show/hide controls for every configured vehicle
-- **Show all / hide all** vehicle controls
-- **Fit all visible vehicles** button
-- Deterministic per-vehicle colors shared by pins and range overlays
-- Optional live remaining-range rings per vehicle plus global range toggle and **fit range areas** action
-- Clickable vehicle markers with address, SoC, remaining range, odometer and GPS-age information
-- Frontend-only GPS average speed between consecutive synchronized position updates, with movement direction/status, jitter/jump protection and optional display in remaining-range labels
-- **Follow** action for an individual vehicle
-- **Google Maps** link from the vehicle popup
-- Optional **Route** planner with a live vehicle position as origin, up to nine ordered intermediate stops from POIs/addresses/free map points, POI/map/address/saved-zone destinations, global route templates and device-aware Google Maps handoff/navigation (3 stops on mobile, up to 9 on desktop)
-- Route POI popups include an air-line distance/range hint; Google Maps remains responsible for the actual street route
-- Browser-local persistence for map mode, zoom, center, selected vehicle, vehicle visibility, range-overlay visibility, current route and current POI UI/filter state; custom POI templates, route templates and named destinations are stored globally in Home Assistant
-- POI 2.0 templates list only **Aktuelle Filter** plus custom global templates; built-in standard presets are no longer injected
-- Charging filters can combine multiple operators/networks and store that combination in a global POI template
-- Charging markers are colored deterministically by operator/network and show stable two-character labels; MapLibre clustering is tuned for large station sets
-- POI radius choices extend to 500/1000 km for Open Charge Map; general Overpass categories are protected at the existing 200-km maximum
-- POI search center can be the selected vehicle, the current route destination or the current MapLibre map center
+`height` is optional. The default is `520` pixels and the card clamps configured values to a sensible map height.
 
-From **0.1.36**, OpenFreeMap, Topo and Satellite all run through the same MapLibre camera. The 0.1.36 map additionally uses MapLibre `fitBounds()` for the **Alle** vehicle action and Cardata CSS fullscreen so external navigation tabs do not collapse the large dashboard map when returning. Vehicle markers are MapLibre geographic markers and POIs are a clustered MapLibre GeoJSON source. Panning/zooming therefore moves basemap, vehicle positions, POIs and open popups in one projection instead of synchronizing independent HTML pixel overlays.
-
-Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** restored the normal multi-vehicle analytics card after a frontend regression. Version **0.1.41** adds stable per-vehicle colors, color-matched live remaining-range overlays, per-vehicle/global range toggles, and fit-to-range support. Version **0.1.42** adds local route planning with the selected vehicle as live GPS origin, up to three POI intermediate stops, a map-selected destination, Google Maps handoff/navigation and direct MapLibre `+` / `−` zoom control. Version **0.1.43** fixes free map destination picking after a MapLibre/full-card rebuild. Version **0.1.44** adds continuous GPS Follow plus global route templates, named destinations, Home Assistant zone targets and explicit address search. Version **0.1.45** introduces POI 2.0: only current/custom global templates, multi-operator charging filters, deterministic operator-colored charging markers with abbreviations, OCM radii up to 1000 km with a 200-km Overpass safety cap, more aggressive clustering and selectable POI centers (vehicle, route destination or map center). Version **0.1.46** keeps vehicle-centered POIs visible across normal GPS movement and during threshold-triggered refreshes, preventing the POI layer from disappearing while driving or planning a route. Version **0.1.47** improves iPhone fullscreen/safe-area behavior, makes the complete mobile POI sheet vertically scrollable, and lets address results or free map points be inserted as intermediate stops. Version **0.1.48** raises Cardata route planning to nine internal intermediate stops and keeps all nine in templates/map state; Google Maps handoff uses a safe three-stop limit on mobile devices and up to nine on desktop, with an explicit warning from the fourth stop onward. Version **0.1.49** makes the map toolbar responsive for narrow dashboard cards and adds frontend-only GPS motion analytics: average speed between synchronized GPS updates, plausibility/jitter protection, movement direction/status, popup/vehicle-panel display and optional context in remaining-range labels. Version **0.1.50** completes the first localization pass for German and English across Home Assistant entity names, setup, Analytics, Map, POI and routing UI, with locale-aware number/date formatting and English fallback for other HA languages.
-
-`height` is optional and is specified in pixels. The default is `520`.
-
-#### Satellite layer
-
-The card includes a **Satellite** mode that works without an API key by default using Esri World Imagery, matching the proven approach in the Bosch eBike map card supplied during development. The map displays the imagery attribution (Esri, Maxar, Earthstar Geographics and GIS User Community). This is an Esri service, not an OpenStreetMap satellite service, and remains subject to Esri's service/usage terms. A different provider can still be configured with `satellite_url`, `satellite_attribution` and optional `satellite_max_zoom`.
-
-No Lovelace configuration is required for the default Satellite layer:
+### Optional map-card settings
 
 ```yaml
 type: custom:cardata-analytics-map-card
+title: Cardata Vehicle Map
+height: 520
+storage_key: cardata_analytics_map_card_v1
+poi_cache_minutes: 15
+poi_max_results: 500
+poi_request_timeout_seconds: 35
 ```
 
-Optionally, the default can be replaced by another provider:
+Available advanced settings:
+
+| Option | Purpose | Range/default |
+|---|---|---|
+| `title` | Card title | optional |
+| `height` | Normal map height in px | default 520 |
+| `storage_key` | Browser-local map preference namespace | optional |
+| `poi_cache_minutes` | Frontend POI cache lifetime | 5–120 min, default 15 |
+| `poi_max_results` | Result limit used by POI requests | 50–1000, default 500 |
+| `poi_request_timeout_seconds` | POI request timeout | 15–90 s, default 35 |
+| `satellite_url` | Optional replacement satellite tile URL | HTTPS with `{z}/{x}/{y}` |
+| `satellite_attribution` | Required attribution for a custom satellite provider | required with custom URL |
+| `satellite_max_zoom` | Maximum zoom for custom satellite tiles | 2–22, default 19 |
+
+---
+
+# Map features
+
+## Map layers
+
+The map offers three display modes:
+
+### OSM
+
+The default street map uses the **OpenFreeMap Liberty** vector style based on OpenStreetMap/OpenMapTiles data and is rendered with **MapLibre GL JS**. No map API key is required.
+
+### Topo
+
+Topographic display based on **OpenTopoMap**.
+
+### Satellite
+
+Satellite mode uses **Esri World Imagery** by default without requiring a Cardata API key. The map displays the required imagery attribution.
+
+A custom HTTPS satellite tile provider can optionally be configured:
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -254,15 +385,95 @@ satellite_attribution: Imagery © Your provider and its data suppliers
 satellite_max_zoom: 19
 ```
 
-For a custom provider, `satellite_url` must be HTTPS and contain `{z}`, `{x}` and `{y}` placeholders, and `satellite_attribution` is required. If a partial/invalid custom configuration is supplied, Satellite mode shows a clear configuration message. Provider access credentials, permitted use and exact attribution remain the responsibility of the configured provider/account.
+Provider credentials, terms of use and attribution requirements remain the responsibility of the configured provider.
 
-#### Nearby POIs
+---
 
-POI discovery is **off by default**. Open the **POIs** control in the map and enable one or more categories. The POI centre can be the currently selected vehicle, the current route destination or the current MapLibre map centre. Radius choices are **2 km, 5 km, 10 km, 25 km, 50 km, 100 km, 150 km, 200 km, 500 km and 1000 km**. Open Charge Map charging searches can use the full selected radius; general OSM/Overpass categories are protected at **200 km** even in a mixed search.
+## Multiple vehicles
 
-Available POI categories in 0.1.37+ are grouped in the UI and can be searched by category name:
+Every GPS-enabled Cardata vehicle is shown with a deterministic colour that remains stable across devices.
 
-- **Auto & Mobility:** EV charging, fuel, workshops, car wash, tyre service, car parts, car rental, parking, parking garages, P+R
+The map provides:
+
+- coloured vehicle markers
+- per-vehicle visibility controls
+- show/hide all vehicles
+- fit all visible vehicles
+- focus/follow an individual vehicle
+- per-vehicle remaining-range overlay control
+- global remaining-range toggle
+- fit all visible range areas
+
+Clicking a vehicle marker opens a popup with available vehicle information such as SoC, remaining range, odometer, address and GPS age.
+
+![Cardata vehicle map with multiple vehicles, range rings and vehicle controls](docs/images/vehicle-map.png)
+
+---
+
+## GPS follow and movement information
+
+When **GPS Follow** is active, every new GPS position keeps the selected vehicle centred while preserving the current zoom level.
+
+- zooming does **not** disable Follow
+- deliberately panning the map disables Follow
+- normal vehicle movement does not hide already loaded vehicle-centred POIs
+
+The map also calculates frontend-only movement information between synchronized GPS updates. Where a valid segment is available, the UI can show:
+
+- average speed between GPS updates
+- movement/standstill status
+- approximate movement direction/bearing
+
+This value is informational only. It is **not a vehicle speed sensor** and does not affect consumption, remaining range or Analytics calculations.
+
+---
+
+## Remaining-range rings
+
+When a vehicle has a remaining-range source, Cardata can draw a geodesic air-line radius around its current GPS position.
+
+The ring:
+
+- follows vehicle GPS changes
+- updates when remaining range changes
+- uses the same deterministic colour as the vehicle marker
+- can be enabled/disabled per vehicle
+- can be shown/hidden globally
+- can be included in automatic map fitting
+
+The ring represents an **air-line distance**, not a road-network reachable area. Terrain, road layout, weather, traffic and real-world consumption are not modelled by the circle.
+
+---
+
+# POI 2.0
+
+POI discovery is off by default. Open the **POI** panel and select one or more categories.
+
+## POI search centre
+
+The POI centre can be switched between:
+
+- selected vehicle
+- current route destination
+- current map centre
+
+## Radius
+
+Available radius choices are:
+
+```text
+2 / 5 / 10 / 25 / 50 / 100 / 150 / 200 / 500 / 1000 km
+```
+
+Open Charge Map charging searches can use the complete selected radius up to **1000 km**.
+
+General OpenStreetMap/Overpass POIs are protected at a maximum of **200 km**, even if a larger mixed-search radius is selected.
+
+## 57 POI categories
+
+Categories are grouped in the UI:
+
+- **Auto & Mobility:** charging, fuel, workshops, car wash, tyres, car parts, car rental, parking, parking garages, P+R
 - **Food & Drink:** restaurants/fast food/food courts, cafés, bakeries, ice cream, bars/pubs, beer gardens
 - **Shopping:** supermarkets, convenience stores, shopping centres, chemists/drugstores, beverage stores
 - **Health:** pharmacies, hospitals, doctors, dentists, clinics, veterinarians
@@ -273,116 +484,252 @@ Available POI categories in 0.1.37+ are grouped in the UI and can be searched by
 - **Leisure & Sights:** museums, attractions, viewpoints, castles, monuments/memorials, zoos, theme parks, swimming pools
 - **Emergency:** police, fire stations, ambulance stations
 
-POI filters in 0.1.37+ can be combined freely. In addition to category and radius, the panel supports:
+## General POI text search
 
-- a general free-text POI search across name, address, brand, operator and network
-- multiple charging-only operator/network filters at the same time, for example `IONITY` + `EnBW` + `Tesla` (OR semantics)
-- charging connector filters for CCS, Type 2, CHAdeMO and Tesla connector tags
-- minimum charging power presets from 50 to 350 kW from normalized Open Charge Map connector data
-- an option to include or exclude charging sites whose power is unknown
-- only **Aktuelle Filter** plus user-defined global POI templates; the former built-in standard presets are no longer injected
-- user-defined templates that can be saved, overwritten and deleted globally in Home Assistant, including operator combinations and POI-centre mode
+The general POI search field filters the already loaded POI dataset locally by information such as name, address, brand, operator and network.
 
-When **Ladestationen** is switched off manually, Cardata clears the charging-specific operator/network, connector, power and unknown-power filters and also clears the previous charging text search. The operator/network filter is never applied to normal cafés, restaurants, fuel stations or other general POIs.
+Changing this text **does not trigger an unnecessary new Overpass request**.
 
-Custom templates store the selected categories, radius, general text filter, charging-operator combination, connector, minimum power, unknown-power option and POI-centre mode. From **0.1.39** they are persisted integration-wide in Home Assistant `.storage`, so the same templates are available on desktop, iPad, iPhone and Companion App. Older browser-local presets are migrated once when the backend becomes available, and v0.1.44 single-operator templates remain compatible. General free-text search is applied locally to the already loaded category/radius dataset, so changing the search text reuses the same cache and does not trigger another Overpass request.
+## Charging-station filters
 
-General non-charging POIs are queried from OpenStreetMap through public Overpass instances only after POI filters are enabled. The Lovelace card sends the request to Cardata Analytics over Home Assistant's websocket connection and Home Assistant performs the external query, so browser CORS/Companion WebView networking is not a prerequisite. The latest-request-wins state machine, watchdog, bounded retries, same-query single-flight deduplication, endpoint cooldowns and manual **Aktualisieren** cache bypass remain in place. Very broad 100–200 km searches still benefit from the local general text filter without causing an additional Overpass request.
+Charging POIs support additional filters:
 
-From **0.1.33**, EV charging searches use **Open Charge Map** as the Europe-wide charging provider. The API key is requested in the Cardata Analytics installation/reconfigure flow and is stored only in the Home Assistant backend; no API key, provider URL or other charging configuration is required in Lovelace. Charging-only searches do not use Overpass, BNetzA, QLever or AFIR.
+- multiple operators/networks at the same time using OR semantics
+- CCS
+- Type 2
+- CHAdeMO
+- Tesla connector tags
+- minimum charging-power presets from 50 to 350 kW
+- include/exclude stations with unknown power
 
-Cardata normalizes the Open Charge Map station model into the existing POI model, including operator/network, address, connector types, charging power, capacity, status and provider attribution where supplied. Charging searches support combined operator filters, deterministic operator-colored marker labels, connector/minimum-power filters and radii up to **500 / 1000 km** without additional Lovelace configuration.
+Known charging operators are displayed with deterministic colours and stable two-character abbreviations on the map.
 
-Open Charge Map area responses are persisted under Home Assistant `.storage` for six hours and may be reused as a stale fallback for up to seven days if the provider is temporarily unavailable. Filter changes within a cached area are therefore local and do not trigger another provider request. Manual **Aktualisieren** bypasses the fresh cache and requests a new Open Charge Map area. Public Overpass failures affect only general non-charging POIs.
+## POI templates
 
-For installations that prefer another Overpass provider or a self-hosted endpoint, the map card also accepts optional advanced settings:
+The template selector contains:
 
-```yaml
-type: custom:cardata-analytics-map-card
-overpass_url: https://overpass-api.de/api/interpreter
-poi_cache_minutes: 15
-poi_max_results: 500
-poi_request_timeout_seconds: 35
-```
+- **Current filters**
+- your own global templates
 
-`overpass_url` must use HTTPS. It affects **general OSM POIs only**. When omitted, Home Assistant uses its built-in public Overpass failover list. Charging searches use Open Charge Map and do not fall back to Overpass. `overpass_url` is retained for backwards-compatible/advanced configuration; `poi_cache_minutes` is clamped to 5–120 minutes, `poi_max_results` to 50–1000, and `poi_request_timeout_seconds` to 15–90 seconds.
+There are no built-in standard POI presets.
 
-Nearby POIs are clustered automatically when several markers overlap at the current zoom level. Clicking a cluster zooms further in. Clicking an individual POI shows its category, available OSM address/details and straight-line distance from the selected vehicle. When present in OSM, the popup also includes opening hours, operator/brand, phone, website, access/fee information, capacity and charging-connector tags.
+Custom templates can store the selected:
 
-Every POI popup offers:
+- categories
+- radius
+- general text filter
+- charging operators
+- connector filter
+- minimum power
+- unknown-power option
+- POI-centre mode
 
-- **Navigation** — opens a Google Maps directions URL with the exact POI coordinates as the destination
-- **Google Maps** — opens the exact POI location
-- **OSM** — opens the original OpenStreetMap object when its OSM type/id is available
+Templates are stored globally in Home Assistant and are therefore available across desktop browsers, tablets, phones and Companion App clients.
 
-Google Maps URLs do not require a Google API key. On iOS/Android, the universal Google Maps link can open the installed Google Maps app; otherwise it opens in a browser.
+![POI 2.0 management with charging-station filters, radius and clustering](docs/images/poi-management.png)
 
-The **OSM** button no longer accesses the donation-funded `tile.openstreetmap.org` application tile service. From 0.1.26 it uses the API-key-free **OpenFreeMap Liberty** vector style rendered in the browser with MapLibre GL JS. OpenFreeMap is based on OpenStreetMap/OpenMapTiles data and its required attribution is displayed on the map. The **Topo** layer continues to use OpenTopoMap, and POI queries continue to run through the Home Assistant backend. Public map/POI services remain best-effort and can change availability.
+## Clustering and POI popups
 
-Topo and Satellite remain on the lightweight raster renderer. From 0.1.26 that renderer reuses already mounted tile elements while panning and during GPS follow, so crossing a tile boundary requests only newly exposed edge tiles instead of rebuilding the full visible tile grid.
+Large POI result sets are clustered in MapLibre. Clicking a cluster zooms in; clicking a POI opens its details.
 
-The cards are registered as a Lovelace module resource automatically when Home Assistant uses storage mode.
+Depending on the source data, a POI popup can include:
 
-After installing or updating the integration, restart Home Assistant. A normal browser or Companion App reload should then be sufficient.
+- name/category
+- address
+- straight-line distance
+- operator/brand/network
+- opening hours
+- phone/website
+- access/fee information
+- capacity
+- charging connectors and power
+- source/provider attribution
 
-## Installation with HACS
+Available popup actions include Google Maps, Navigation and the original OSM object where available. POIs can also be inserted directly into the Cardata route planner.
 
-### Custom repository
+---
 
-Until Cardata Analytics is available in the default HACS repository list, add it as a custom repository:
+# Route planning
 
-1. Open **HACS** in Home Assistant.
-2. Open the menu and select **Custom repositories**.
-3. Add:
+Open the **Route** panel from the map toolbar.
 
-   ```text
-   https://github.com/lemuba/cardata-analytics
-   ```
+The origin is always the **current GPS position of the selected Cardata vehicle**. Saved route templates keep the selected start vehicle, not an old frozen start coordinate.
 
-4. Select category **Integration**.
-5. Install **Cardata Analytics**.
-6. Restart Home Assistant.
-7. Go to **Settings → Devices & services → Add integration**.
-8. Search for **Cardata Analytics**.
+![Cardata route planning with intermediate stops, address search and map selection](docs/images/route-planning.png)
 
-## Manual installation
+## Route points
 
-1. Copy:
+Cardata supports up to **9 ordered intermediate stops internally**.
 
-   ```text
-   custom_components/cardata_analytics
-   ```
+Intermediate stops can be created from:
 
-   to:
+- visible POIs
+- Open Charge Map charging stations
+- address-search results
+- free points selected on the map
 
-   ```text
-   /config/custom_components/cardata_analytics
-   ```
+The final destination can be selected from POIs, an address search, a free map point, saved named destinations or available Home Assistant zones.
 
-2. Restart Home Assistant.
-3. Go to **Settings → Devices & services → Add integration**.
-4. Search for **Cardata Analytics**.
-5. Add one or more vehicles.
-6. Add the dashboard card if desired:
+Intermediate stops can be reordered or removed.
 
-   ```yaml
-   type: custom:cardata-analytics-card
-   ```
+## Address search
 
-## Data and privacy
+The route planner includes an explicit address/place search. The query is sent to the Cardata backend only when the search is submitted.
 
-Cardata Analytics performs its vehicle analytics calculations locally in Home Assistant and does not send data to the developer. It does not connect to a vehicle manufacturer directly; it only reads the source entities that already exist in your Home Assistant instance.
+Results can be:
 
-If optional GPS latitude/longitude sources are configured, the integration sends the current coordinates to the public **OpenStreetMap Nominatim** service only when a reverse-geocoding lookup is required. Successful address results are cached locally in Home Assistant to minimize external requests. From 0.1.44, the route panel can also send a user-entered address/placename to Nominatim when the user explicitly submits an address search; these searches share the same backend rate limiter and are cached in memory. If GPS sources are not configured and no address search is submitted, Cardata Analytics makes no Nominatim requests.
+- inserted as the next intermediate stop
+- used as the destination
+- saved globally as a named destination
 
-The Google Maps URL is generated locally from the coordinates. Generating the link itself makes no Google request; Google receives the coordinates only when a user opens the link.
+## Free map points
 
-## Limitations
+Use the map picker to select an arbitrary point as either:
 
-- Energy consumption is estimated from SoC changes and usable battery capacity; it is not a direct measurement of traction energy.
-- Accuracy depends on the precision and update frequency of the source sensors.
-- Custom-range history is available from the date Cardata Analytics starts maintaining its daily ledger. Upgrade migration can reconstruct the immediately preceding tracked day when unambiguous; older pre-ledger days may remain unavailable.
-- SoH estimation for the BMW i3 120 Ah preset is specific to that preset and is not applied to generic BEVs.
+- the next intermediate stop
+- the final destination
+
+On mobile devices the route panel collapses to a compact picker while selecting the point so the map remains usable.
+
+## Named destinations and Home Assistant zones
+
+Named destinations such as **HOME**, **Work** or any custom place can be stored globally, renamed and deleted.
+
+Existing Home Assistant `zone.*` entities are also offered as route targets.
+
+## Global route templates
+
+Complete route plans can be saved as global route templates in Home Assistant and reused from other devices.
+
+## Google Maps handoff
+
+Cardata itself stores and displays up to **9 intermediate stops**.
+
+For Google Maps handoff:
+
+- mobile/iPhone/iPad-safe mode exports the **first 3 intermediate stops**
+- desktop mode exports up to **9 intermediate stops**
+- from the 4th stop onward Cardata shows a compatibility warning so additional Cardata stops are never silently mistaken for guaranteed mobile Google Maps stops
+
+The **Google Maps** and **Navigation** actions use standard Google Maps URLs. Cardata does not require a Google Maps API key.
+
+Cardata shows route points and air-line distance/range hints but intentionally does not draw a synthetic road route. Google Maps/navigation remains responsible for the actual road route and turn-by-turn navigation.
+
+---
+
+# Address resolution with OpenStreetMap Nominatim
+
+If GPS latitude and longitude are configured, Cardata Analytics can resolve the current vehicle address through the public **OpenStreetMap Nominatim** service.
+
+No Nominatim API key is required.
+
+To reduce external requests, Cardata:
+
+- caches successful address results
+- requires approximately 100 metres of movement before another automatic address lookup
+- limits each vehicle to at most one automatic lookup every 5 minutes
+- serializes Nominatim requests from all Cardata vehicles
+- keeps the last successful address during temporary provider or upstream outages
+
+The current-address entity also provides a locally generated Google Maps URL based on the coordinates.
+
+Explicit route address searches use the same backend/rate-limited Nominatim access and are only submitted when the user starts a search.
+
+---
+
+# Persistence and device behaviour
+
+Cardata deliberately separates shared Home Assistant data from browser-local map preferences.
+
+## Stored globally in Home Assistant
+
+- vehicle analytics and daily ledger
+- comparison period
+- global POI templates
+- global route templates
+- named route destinations
+- Open Charge Map configuration/API key
+
+## Stored locally in the browser/device
+
+The map remembers interface preferences such as:
+
+- map mode
+- map centre and zoom
+- selected vehicle
+- vehicle visibility
+- range-overlay visibility
+- current unsaved route
+- current POI/filter UI state
+
+This allows shared templates and destinations while still letting each phone, tablet or desktop keep its own preferred map view.
+
+---
+
+# Responsive and mobile behaviour
+
+The map card is designed for normal Home Assistant dashboards, narrow dashboard columns, tablets and phones.
+
+- narrow cards switch the map controls to a two-row layout instead of hiding controls horizontally
+- mobile POI panels use a single vertically scrollable bottom sheet
+- route point picking uses a compact mobile panel
+- touch targets are enlarged on phones
+- pseudo-fullscreen/fullscreen respects iPhone safe areas so the exit control remains reachable
+- the map uses responsive MapLibre controls and clustering for large POI result sets
+
+---
+
+# Localization
+
+Cardata Analytics currently ships complete first-party UI translations for:
+
+- German
+- English
+
+The selected Home Assistant language is used for setup, entity display names, both dashboard cards, POI/routing text, notices, dates and number formatting.
+
+Other Home Assistant languages currently fall back to English.
+
+For backward compatibility, the internal raw values of the comparison-period preset select remain the established German tokens. The Cardata cards display the localized labels, so existing automations using those raw values continue to work.
+
+---
+
+
+# External services and privacy
+
+Vehicle analytics are calculated locally in Home Assistant. Cardata Analytics does not send vehicle analytics to the project developer and does not connect directly to a vehicle manufacturer.
+
+Depending on the features you use, the following external services may receive requests:
+
+| Service | Used for | When data is sent |
+|---|---|---|
+| OpenFreeMap / map tile providers | Map display | When the map is opened |
+| OpenTopoMap | Topographic map | When Topo mode is used |
+| Esri World Imagery | Default satellite imagery | When Satellite mode is used |
+| OpenStreetMap Nominatim | Reverse geocoding / explicit address search | Only when address functionality is used |
+| Public Overpass instances | General OSM POIs | When general POI categories are loaded/refreshed |
+| Open Charge Map | Charging-station POIs | When charging POIs are loaded/refreshed and OCM is enabled |
+| Google Maps | Maps/navigation | Only when the user opens a generated Google Maps/Navigation link |
+
+The Open Charge Map API key remains in Home Assistant backend configuration and is not exposed as a Lovelace configuration field.
+
+Public map, geocoding, POI and charging services are external services with their own availability, usage policies and data licenses.
+
+---
+
+# Important limitations
+
+- Consumption is **estimated** from SoC changes and usable battery capacity. It is not a direct measurement of traction energy.
+- Accuracy depends on the source sensors and their update frequency.
+- The remaining-range circle is an air-line visualization, not an isochrone or road-reachable-area calculation.
+- Frontend GPS speed is an average between accepted GPS updates and must not be interpreted as vehicle/tachometer speed.
+- Cardata's route planner does not calculate a road route itself; Google Maps/navigation does that after handoff.
+- Cardata keeps up to nine intermediate stops, but mobile Google Maps URLs only receive the first three in safe mobile mode.
+- General OSM POIs depend on public Overpass infrastructure and are intentionally capped at 200 km.
+- Open Charge Map and OSM data can be incomplete, outdated or supplied by third parties; always verify critical charging/navigation information before relying on it.
+- Historical selected-range coverage starts with the Cardata daily ledger; days that cannot be reconstructed safely remain incomplete instead of being guessed.
+
+---
 
 ## Feedback and issues
 
@@ -394,16 +741,4 @@ https://github.com/lemuba/cardata-analytics/issues
 
 MIT
 
-
-### Temporary odometer outages
-
-If a vehicle cloud temporarily stops providing a live odometer value, Cardata Analytics keeps the last valid odometer as a frozen fallback. A last-known value from a previous calendar day is used as the current day's baseline, so historical distance is not counted again as today's distance. When the source returns, new distance accumulates from that frozen baseline. No distance is invented while the source is offline.
-
-
-### Open Charge Map (v0.1.34+)
-
-Version 0.1.34+ keeps the v0.1.34 OCM `/referencedata` lookup-table cache (operators, connection types, status/usage types and data providers) and requests charging locations with `compact=true&verbose=false`. The compact numeric IDs are decoded locally. If reference data cannot be refreshed, a still-valid stale reference cache is used; if no reference cache exists at all, Cardata falls back to a normal non-compact OCM response rather than failing the charging search. Identical area requests are single-flight deduplicated across cards and rapid filter changes.
-Targeted operator/connector presets (for example **IONITY + CCS**) are also narrowed server-side using OCM reference IDs, while power/text filtering remains local. This keeps 100–200 km searches smaller and reduces the risk of hitting broad result limits. A broader cached area may still be reused for narrower filters.
-
-
-Cardata Analytics nutzt Open Charge Map als europaweite Quelle für Ladestationen. Der API-Key wird beim Einrichten bzw. Neu-Konfigurieren der Integration abgefragt und bleibt im Home-Assistant-Backend. Die Lovelace-Karte benötigt keinen API-Key und keine Provider-URL. Ladestationsdaten werden gebietsweise persistent gecacht, sodass temporäre Provider-Ausfälle mit dem zuletzt erfolgreichen Datenbestand überbrückt werden können.
+Forking, modifying and redistributing Cardata Analytics is **expressly welcome** under the terms of the MIT License. Forks and derivative projects are encouraged as long as the MIT license terms and required copyright/license notice are respected.
