@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.52
+
+- Fixed general POI free-text searches losing nearby matches when a larger radius produced more results than `poi_max_results`.
+- General Overpass requests now keep a larger bounded candidate pool (up to 3000 items), sort candidates by distance in Cardata, and only render up to the configured `poi_max_results`.
+- Typing in the general POI search remains fully local and does not create Overpass traffic.
+- Pressing **Refresh** with a general search term now performs one targeted Overpass text query and merges those matches into the current local candidate pool without replacing the broad cache.
+- Added a clear DE/EN status notice when the broad candidate pool is saturated and local text search may be incomplete.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.52.js?v=0.1.52`.
+
 ## 0.1.51
 
 - Documentation/screenshots release based on the unchanged v0.1.50 runtime feature set.

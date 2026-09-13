@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.51  
+> **Current release:** v0.1.52  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI; v0.1.51 is a documentation/screenshots release and does not change the runtime feature set shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.52; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -280,7 +280,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.51.js?v=0.1.51
+  - url: /cardata_analytics/cardata-analytics-card-0.1.52.js?v=0.1.52
     type: module
 ```
 
@@ -350,11 +350,13 @@ Available advanced settings:
 | `height` | Normal map height in px | default 520 |
 | `storage_key` | Browser-local map preference namespace | optional |
 | `poi_cache_minutes` | Frontend POI cache lifetime | 5–120 min, default 15 |
-| `poi_max_results` | Result limit used by POI requests | 50–1000, default 500 |
+| `poi_max_results` | Maximum POIs rendered after local filtering; general OSM searches may fetch a larger bounded candidate pool internally | 50–1000, default 500 |
 | `poi_request_timeout_seconds` | POI request timeout | 15–90 s, default 35 |
 | `satellite_url` | Optional replacement satellite tile URL | HTTPS with `{z}/{x}/{y}` |
 | `satellite_attribution` | Required attribution for a custom satellite provider | required with custom URL |
 | `satellite_max_zoom` | Maximum zoom for custom satellite tiles | 2–22, default 19 |
+
+For general OSM POIs, free-text typing remains **local** and does not trigger Overpass requests. Cardata keeps a larger bounded candidate pool internally (up to 3000 items) so name/brand searches remain useful at wider radii. If that candidate pool is exhausted, the POI status explains that the local search may be incomplete; pressing **Refresh** with a search term performs one targeted Overpass query for that term.
 
 ---
 

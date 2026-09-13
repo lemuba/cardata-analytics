@@ -306,13 +306,23 @@ def _operator_filters(msg: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _cache_key(msg: dict[str, Any]) -> tuple[Any, ...]:
-    charging_selected = "charging" in set(msg["categories"])
+    categories = set(msg["categories"])
+    charging_selected = "charging" in categories
+    general_selected = any(category != "charging" for category in categories)
+    # Explicit text refreshes use their own backend cache/in-flight key so a
+    # targeted result set can never replace the broad reusable category cache.
+    search_filter = (
+        str(msg.get("search_filter", "") or "").strip().casefold()
+        if general_selected
+        else ""
+    )
     return (
         round(float(msg["latitude"]), 3),
         round(float(msg["longitude"]), 3),
         int(msg["radius_km"]),
-        tuple(sorted(set(msg["categories"]))),
+        tuple(sorted(categories)),
         int(msg["max_results"]),
+        search_filter,
         _operator_filters(msg) if charging_selected else (),
         str(msg.get("connector_filter", "any")) if charging_selected else "any",
     )
@@ -392,7 +402,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.51 "
+                            "Cardata Analytics/0.1.52 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -1056,7 +1066,7 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
             headers={
                 "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
                 "Accept-Encoding": "gzip",
-                "User-Agent": "Cardata Analytics/0.1.51 (https://github.com/lemuba/cardata-analytics)",
+                "User-Agent": "Cardata Analytics/0.1.52 (https://github.com/lemuba/cardata-analytics)",
             },
             allow_redirects=True,
         ) as response:
@@ -1088,7 +1098,7 @@ async def _async_discover_bnetza_csv_urls(hass: HomeAssistant) -> list[str]:
     for page_url in BNETZA_PAGE_URLS:
         try:
             async with asyncio.timeout(12.0):
-                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.51"}) as response:
+                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.52"}) as response:
                     if response.status != 200:
                         raise RuntimeError(f"HTTP {response.status}")
                     page = await response.text(errors="replace")
@@ -1144,7 +1154,7 @@ async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
                         headers={
                             "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
                             "Accept-Encoding": "identity",
-                            "User-Agent": "Cardata Analytics/0.1.51",
+                            "User-Agent": "Cardata Analytics/0.1.52",
                         },
                         allow_redirects=True,
                     ) as response:
@@ -1541,7 +1551,7 @@ async def _async_fetch_ocm_reference_data(
     session = async_get_clientsession(hass)
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.51 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.52 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_REFERENCE_HTTP_TIMEOUT_SECONDS):
         async with session.get(
@@ -1785,7 +1795,7 @@ async def _async_fetch_ocm_area(
     params.update(_ocm_server_filter_params(references, msg))
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.51 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.52 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_HTTP_TIMEOUT_SECONDS):
         async with session.get(OCM_API_URL, params=params, headers=headers) as response:
@@ -2032,16 +2042,24 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
         combined: list[dict[str, Any]] = []
 
         general_task: asyncio.Task[tuple[list[dict[str, Any]], str]] | None = None
+        general_candidate_limit = 0
+        general_candidate_limit_hit = False
         if general_categories:
             general_radius_km = min(int(msg["radius_km"]), POI_GENERAL_MAX_RADIUS_KM)
+            # poi_max_results is the visible frontend ceiling, not the size of
+            # the local search basis. Fetch up to 3x as many general candidates
+            # (bounded at 3000) so increasing radius does not unnecessarily drop
+            # nearby brand/name matches before client-side text filtering.
+            general_candidate_limit = min(3000, max(500, int(msg["max_results"]) * 3))
+            general_search = str(msg.get("search_filter", "") or "").strip()
             query = _build_overpass_query(
                 float(msg["latitude"]),
                 float(msg["longitude"]),
                 general_radius_km,
                 general_categories,
-                int(msg["max_results"]),
+                general_candidate_limit,
                 int(msg["timeout_seconds"]),
-                "",  # text search is client-side so broad category caches are reusable
+                general_search,
                 "",  # operator/network is charging-specific; never filter normal POIs
                 "any",
             )
@@ -2063,6 +2081,10 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
         if general_task is not None:
             try:
                 general_elements, endpoint = await general_task
+                general_candidate_limit_hit = (
+                    general_candidate_limit > 0
+                    and len(general_elements) >= general_candidate_limit
+                )
                 combined.extend(general_elements)
                 sources.append(_endpoint_host(endpoint))
             except Exception as err:
@@ -2084,7 +2106,14 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
 
         combined.sort(key=_distance)
         max_results = int(msg["max_results"])
-        combined = combined[: max_results * 2]
+        # Return the wider general candidate pool to the frontend; the map still
+        # renders at most poi_max_results after local filters are applied.
+        candidate_return_limit = (
+            min(6000, max(general_candidate_limit, max_results * 2))
+            if general_categories
+            else min(6000, max_results * 2)
+        )
+        combined = combined[:candidate_return_limit]
 
         if not combined and warnings and not charging_provider_available and not sources:
             _LOGGER.debug("Cardata general POI provider unavailable: %s", " · ".join(warnings))
@@ -2103,6 +2132,8 @@ async def _async_network_query(hass: HomeAssistant, msg: dict[str, Any]) -> dict
             "warnings": warnings,
             "charging_status": charging_status,
             "retry_after_seconds": 0,
+            "candidate_limit_hit": general_candidate_limit_hit,
+            "candidate_limit": general_candidate_limit,
             "stored_at": time.monotonic(),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
         }
@@ -2133,6 +2164,8 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
             "warnings": cached.get("warnings", []),
             "charging_status": cached.get("charging_status", "ready"),
             "retry_after_seconds": 0,
+            "candidate_limit_hit": bool(cached.get("candidate_limit_hit", False)),
+            "candidate_limit": int(cached.get("candidate_limit", 0) or 0),
             "cached": True,
             "elapsed_ms": 0,
         }
@@ -2172,6 +2205,8 @@ async def _async_get_pois(hass: HomeAssistant, msg: dict[str, Any]) -> dict[str,
         "warnings": result.get("warnings", []),
         "charging_status": result.get("charging_status", "unused"),
         "retry_after_seconds": int(result.get("retry_after_seconds", 0) or 0),
+        "candidate_limit_hit": bool(result.get("candidate_limit_hit", False)),
+        "candidate_limit": int(result.get("candidate_limit", 0) or 0),
         "cached": False,
         "elapsed_ms": int(result.get("elapsed_ms", 0)),
     }
