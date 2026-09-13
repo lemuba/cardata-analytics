@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.41
+
+- Added deterministic, colorblind-friendly per-vehicle colors shared by vehicle pins, vehicle-panel indicators and range overlays.
+- Added optional per-vehicle live remaining-range overlays as geodesic MapLibre polygons, with matching border/fill colors and range labels.
+- Range overlays follow every GPS update and automatically shrink/grow when the vehicle range sensor changes.
+- Added toolbar controls to toggle all range overlays and fit all enabled range areas.
+- Added per-vehicle range toggles and `Alle + Reichweite` fit action in the vehicle panel.
+- Added a range toggle to vehicle popups.
+- Range overlay visibility is stored locally with the existing map preferences; color assignment is deterministic across devices.
+- No Analytics, Daily Ledger, date-range, Open Charge Map or POI-provider logic was changed.
+
 ## 0.1.40
 
 - Hotfix: restore `custom:cardata-analytics-card` (the normal multi-vehicle analytics card).

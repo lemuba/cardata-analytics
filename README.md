@@ -171,7 +171,16 @@ The analytics card automatically expands when additional vehicles are added and 
 
 ### Vehicle map card
 
-Version 0.1.40 is the current separate interactive vehicle map:
+Version 0.1.41 is the current separate interactive vehicle map:
+
+
+### Vehicle colors and remaining-range overlays
+
+- Every vehicle gets a deterministic, stable color derived from its Home Assistant device ID. The same vehicle therefore keeps the same color on desktop, iPhone and iPad.
+- The vehicle pin, vehicle-panel color indicator and remaining-range overlay use the same color.
+- Remaining range is drawn as a geodesic air-line radius around the live GPS position. It follows GPS changes and shrinks/grows whenever the range sensor changes.
+- Range overlays can be enabled per vehicle, toggled globally from the map toolbar, and fitted with the `Bereich` / `Alle + Reichweite` actions.
+- Range circles are a visual air-line estimate, not a street-routing reachable-area calculation.
 
 ```yaml
 type: custom:cardata-analytics-map-card
@@ -190,14 +199,16 @@ The map automatically includes every configured vehicle that has Cardata Analyti
 - Show/hide controls for every configured vehicle
 - **Show all / hide all** vehicle controls
 - **Fit all visible vehicles** button
+- Deterministic per-vehicle colors shared by pins and range overlays
+- Optional live remaining-range rings per vehicle plus global range toggle and **fit range areas** action
 - Clickable vehicle markers with address, SoC, remaining range, odometer and GPS-age information
 - **Follow** action for an individual vehicle
 - **Google Maps** link from the vehicle popup
-- Browser-local persistence for map mode, zoom, center, selected vehicle, vehicle visibility and current POI UI/filter state; custom POI templates are stored globally in Home Assistant from 0.1.39
+- Browser-local persistence for map mode, zoom, center, selected vehicle, vehicle visibility, range-overlay visibility and current POI UI/filter state; custom POI templates are stored globally in Home Assistant from 0.1.39
 
 From **0.1.36**, OpenFreeMap, Topo and Satellite all run through the same MapLibre camera. The 0.1.36 map additionally uses MapLibre `fitBounds()` for the **Alle** vehicle action and Cardata CSS fullscreen so external navigation tabs do not collapse the large dashboard map when returning. Vehicle markers are MapLibre geographic markers and POIs are a clustered MapLibre GeoJSON source. Panning/zooming therefore moves basemap, vehicle positions, POIs and open popups in one projection instead of synchronizing independent HTML pixel overlays.
 
-Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** is a focused hotfix restoring the normal multi-vehicle analytics card after a 0.1.39 frontend regression.
+Version **0.1.37** expanded the POI catalogue/search layer to 57 grouped categories. Version **0.1.38** fixed individual vehicle Follow/focus. Version **0.1.39** makes the POI panel responsive/mobile-first, adds a vehicle selector with map focus, and stores custom POI templates globally in Home Assistant with one-time migration from older browser-local templates. Version **0.1.40** restored the normal multi-vehicle analytics card after a frontend regression. Version **0.1.41** adds stable per-vehicle colors, color-matched live remaining-range overlays, per-vehicle/global range toggles, and fit-to-range support.
 
 `height` is optional and is specified in pixels. The default is `520`.
 

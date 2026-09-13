@@ -366,7 +366,7 @@ async def _async_fetch_overpass(
                     headers={
                         "Accept": "application/json",
                         "User-Agent": (
-                            "Cardata Analytics/0.1.40 "
+                            "Cardata Analytics/0.1.41 "
                             "(https://github.com/lemuba/cardata-analytics)"
                         ),
                     },
@@ -1030,7 +1030,7 @@ async def _async_refresh_afir_dataset(hass: HomeAssistant) -> dict[str, Any]:
             headers={
                 "Accept": "application/json, application/octet-stream;q=0.8, */*;q=0.5",
                 "Accept-Encoding": "gzip",
-                "User-Agent": "Cardata Analytics/0.1.40 (https://github.com/lemuba/cardata-analytics)",
+                "User-Agent": "Cardata Analytics/0.1.41 (https://github.com/lemuba/cardata-analytics)",
             },
             allow_redirects=True,
         ) as response:
@@ -1062,7 +1062,7 @@ async def _async_discover_bnetza_csv_urls(hass: HomeAssistant) -> list[str]:
     for page_url in BNETZA_PAGE_URLS:
         try:
             async with asyncio.timeout(12.0):
-                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.40"}) as response:
+                async with session.get(page_url, headers={"User-Agent": "Cardata Analytics/0.1.41"}) as response:
                     if response.status != 200:
                         raise RuntimeError(f"HTTP {response.status}")
                     page = await response.text(errors="replace")
@@ -1118,7 +1118,7 @@ async def _async_refresh_bnetza_dataset(hass: HomeAssistant) -> dict[str, Any]:
                         headers={
                             "Accept": "text/csv, application/octet-stream;q=0.9, */*;q=0.5",
                             "Accept-Encoding": "identity",
-                            "User-Agent": "Cardata Analytics/0.1.40",
+                            "User-Agent": "Cardata Analytics/0.1.41",
                         },
                         allow_redirects=True,
                     ) as response:
@@ -1509,7 +1509,7 @@ async def _async_fetch_ocm_reference_data(
     session = async_get_clientsession(hass)
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.40 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.41 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_REFERENCE_HTTP_TIMEOUT_SECONDS):
         async with session.get(
@@ -1753,7 +1753,7 @@ async def _async_fetch_ocm_area(
     params.update(_ocm_server_filter_params(references, msg))
     headers = {
         "Accept": "application/json",
-        "User-Agent": "Cardata Analytics/0.1.40 (https://github.com/lemuba/cardata-analytics)",
+        "User-Agent": "Cardata Analytics/0.1.41 (https://github.com/lemuba/cardata-analytics)",
     }
     async with asyncio.timeout(OCM_HTTP_TIMEOUT_SECONDS):
         async with session.get(OCM_API_URL, params=params, headers=headers) as response:
