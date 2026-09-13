@@ -275,7 +275,10 @@ class CardataAnalyticsSensor(SensorEntity):
         self.description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_suggested_object_id = f"cardata_{slugify(entry.title)}_{description.key}"
-        self._attr_name = description.name
+        # Keep unique IDs and entity IDs stable while letting Home Assistant
+        # translate the visible entity name from translations/<lang>.json.
+        self._attr_name = None
+        self._attr_translation_key = description.key
         self._attr_native_unit_of_measurement = description.unit
         self._attr_device_class = description.device_class
         self._attr_state_class = description.state_class

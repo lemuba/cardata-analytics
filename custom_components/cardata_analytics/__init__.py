@@ -38,8 +38,8 @@ from .route_data import async_register_websocket as async_register_route_websock
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.49.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.49"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.50.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.50"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
@@ -226,6 +226,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     controller = await _async_get_controller(hass)
 
     if _entry_kind(entry) == ENTRY_KIND_GLOBAL:
+        # The global entry title used to contain a German-only suffix. Keep the
+        # persisted identity unchanged but normalize the visible title to the
+        # language-neutral integration name on upgrade.
+        if entry.title == "Cardata Analytics Vergleichszeitraum":
+            hass.config_entries.async_update_entry(entry, title="Cardata Analytics")
         entry.runtime_data = controller
         await hass.config_entries.async_forward_entry_setups(entry, ["date", "select"])
         return True

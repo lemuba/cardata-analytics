@@ -57,5 +57,94 @@
       "global_entry_managed": "Der globale Vergleichszeitraum wird automatisch von Cardata Analytics verwaltet.",
       "unsupported_import": "Nicht unterstützter interner Import."
     }
+  },
+  "entity": {
+    "sensor": {
+      "soc": {
+        "name": "Ladezustand"
+      },
+      "mileage": {
+        "name": "Kilometerstand"
+      },
+      "battery_capacity": {
+        "name": "Nutzbare Batteriekapazität"
+      },
+      "energy_consumed_total": {
+        "name": "Verbrauchte Energie gesamt"
+      },
+      "energy_day": {
+        "name": "Verbrauchte Energie Heute"
+      },
+      "distance_day": {
+        "name": "Fahrstrecke Heute"
+      },
+      "average_consumption_day": {
+        "name": "Durchschnittsverbrauch Heute"
+      },
+      "energy_week": {
+        "name": "Verbrauchte Energie Woche"
+      },
+      "distance_week": {
+        "name": "Fahrstrecke Woche"
+      },
+      "average_consumption_week": {
+        "name": "Durchschnittsverbrauch Woche"
+      },
+      "energy_month": {
+        "name": "Verbrauchte Energie Monat"
+      },
+      "distance_month": {
+        "name": "Fahrstrecke Monat"
+      },
+      "average_consumption_month": {
+        "name": "Durchschnittsverbrauch Monat"
+      },
+      "energy_year": {
+        "name": "Verbrauchte Energie Jahr"
+      },
+      "distance_year": {
+        "name": "Fahrstrecke Jahr"
+      },
+      "average_consumption_year": {
+        "name": "Durchschnittsverbrauch Jahr"
+      },
+      "latitude": {
+        "name": "GPS-Breitengrad"
+      },
+      "longitude": {
+        "name": "GPS-Längengrad"
+      },
+      "current_address": {
+        "name": "Aktuelle Adresse"
+      },
+      "custom_energy": {
+        "name": "Verbrauchte Energie Zeitraum"
+      },
+      "custom_distance": {
+        "name": "Fahrstrecke Zeitraum"
+      },
+      "custom_average_consumption": {
+        "name": "Durchschnittsverbrauch Zeitraum"
+      },
+      "soh": {
+        "name": "Batteriezustand SoH"
+      },
+      "range": {
+        "name": "Restreichweite"
+      }
+    },
+    "date": {
+      "range_from": {
+        "name": "Vergleichszeitraum von"
+      },
+      "range_to": {
+        "name": "Vergleichszeitraum bis"
+      }
+    },
+    "select": {
+      "range_preset": {
+        "name": "Vergleichszeitraum Schnellwahl"
+      }
+    }
   }
 }

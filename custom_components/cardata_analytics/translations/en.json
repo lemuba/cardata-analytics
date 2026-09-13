@@ -57,5 +57,94 @@
       "global_entry_managed": "The global comparison period is managed automatically by Cardata Analytics.",
       "unsupported_import": "Unsupported internal import."
     }
+  },
+  "entity": {
+    "sensor": {
+      "soc": {
+        "name": "State of charge"
+      },
+      "mileage": {
+        "name": "Odometer"
+      },
+      "battery_capacity": {
+        "name": "Usable battery capacity"
+      },
+      "energy_consumed_total": {
+        "name": "Total energy consumed"
+      },
+      "energy_day": {
+        "name": "Energy consumed today"
+      },
+      "distance_day": {
+        "name": "Distance today"
+      },
+      "average_consumption_day": {
+        "name": "Average consumption today"
+      },
+      "energy_week": {
+        "name": "Energy consumed this week"
+      },
+      "distance_week": {
+        "name": "Distance this week"
+      },
+      "average_consumption_week": {
+        "name": "Average consumption this week"
+      },
+      "energy_month": {
+        "name": "Energy consumed this month"
+      },
+      "distance_month": {
+        "name": "Distance this month"
+      },
+      "average_consumption_month": {
+        "name": "Average consumption this month"
+      },
+      "energy_year": {
+        "name": "Energy consumed this year"
+      },
+      "distance_year": {
+        "name": "Distance this year"
+      },
+      "average_consumption_year": {
+        "name": "Average consumption this year"
+      },
+      "latitude": {
+        "name": "GPS latitude"
+      },
+      "longitude": {
+        "name": "GPS longitude"
+      },
+      "current_address": {
+        "name": "Current address"
+      },
+      "custom_energy": {
+        "name": "Energy consumed selected period"
+      },
+      "custom_distance": {
+        "name": "Distance selected period"
+      },
+      "custom_average_consumption": {
+        "name": "Average consumption selected period"
+      },
+      "soh": {
+        "name": "Battery health SoH"
+      },
+      "range": {
+        "name": "Remaining range"
+      }
+    },
+    "date": {
+      "range_from": {
+        "name": "Comparison period from"
+      },
+      "range_to": {
+        "name": "Comparison period to"
+      }
+    },
+    "select": {
+      "range_preset": {
+        "name": "Comparison period preset"
+      }
+    }
   }
 }

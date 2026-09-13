@@ -81,7 +81,7 @@ class CardataAnalyticsConfigFlow(config_entries.ConfigFlow, domain="cardata_anal
             data[CONF_OCM_ENABLED] = bool(import_data.get(CONF_OCM_ENABLED, True))
             data[CONF_OCM_API_KEY] = api_key
         return self.async_create_entry(
-            title="Cardata Analytics Vergleichszeitraum",
+            title="Cardata Analytics",
             data=data,
         )
 

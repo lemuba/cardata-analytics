@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.50
+
+- Added complete first-step German/English localization across both custom cards: Analytics, vehicle/map controls, POI categories/filters/status, route planning, prompts, errors, tooltips and mobile/fullscreen UI.
+- Card language now follows the Home Assistant language. German uses the existing source wording; English uses a dedicated translation dictionary. Other Home Assistant languages currently fall back to English.
+- Number and date formatting in both cards now follows the active Home Assistant/browser locale instead of being hard-coded to `de-DE`.
+- Added Home Assistant entity-name translations for all Cardata sensors and the global comparison-period date/select controls while preserving existing unique IDs and suggested entity IDs. The preset select's legacy German raw option values intentionally remain unchanged for automation/service compatibility; both Cardata custom cards render those presets in the active UI language.
+- The integration-managed global comparison entry is normalized from the former German-only title `Cardata Analytics Vergleichszeitraum` to the language-neutral `Cardata Analytics`; its config-entry identity and stored data are unchanged.
+- POI category/group labels, route messages, GPS motion status/directions, vehicle popup text, map attribution labels and fallback charging-station display names are localized.
+- Config-flow German/English translations remain key-for-key aligned and were revalidated together with the new entity translation sections.
+- Analytics, Daily Ledger and all vehicle/range/consumption calculations are unchanged. `controller.py` and `const.py` remain byte-identical to 0.1.49; `sensor.py`, `date.py` and `select.py` only receive localization metadata/name changes.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.50.js?v=0.1.50`.
+
 ## 0.1.49
 
 - Fixed narrow map cards on desktop/mobile: map-mode controls and action controls now use a responsive two-row layout instead of hiding right-side buttons in a scrollbar-free horizontal overflow area.
