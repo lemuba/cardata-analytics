@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.42
+
+- Added optional route planning to `custom:cardata-analytics-map-card` with a live vehicle GPS position as route origin.
+- Added a dedicated responsive route panel with vehicle selection, up to three ordered intermediate stops, map-picked destination, route fit, clear/reset actions and mobile-friendly compact map-pick mode.
+- Every visible POI can now be added directly as a route intermediate stop or destination; charging stations therefore work as selectable charging stops without a new provider or API key.
+- Route points are rendered as numbered MapLibre markers only. Cardata deliberately does not draw a fake straight-line road route; Google Maps calculates the actual road route when opened.
+- Added Google Maps route handoff using origin, destination and ordered waypoints, plus an optional navigation action. Maximum intermediate stops are intentionally limited to three for reliable mobile/iPhone URL handoff.
+- Route state is stored locally with the existing map preferences; the route origin always uses the currently available GPS coordinates of the selected vehicle.
+- POI popups now show air-line distance plus whether the POI lies inside or outside the vehicle's current air-line range estimate.
+- Fixed the map `+` / `−` controls by driving the active MapLibre camera directly instead of relying on the legacy render-state synchronization path. Mouse-wheel and pinch zoom remain unchanged.
+- No Analytics, Daily Ledger, Open Charge Map, POI-provider or range-calculation backend logic was changed.
+
 ## 0.1.41
 
 - Added deterministic, colorblind-friendly per-vehicle colors shared by vehicle pins, vehicle-panel indicators and range overlays.
