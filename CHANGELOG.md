@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.49
+
+- Fixed narrow map cards on desktop/mobile: map-mode controls and action controls now use a responsive two-row layout instead of hiding right-side buttons in a scrollbar-free horizontal overflow area.
+- Added frontend-only per-vehicle GPS motion calculation from two synchronized latitude/longitude updates. The value is an average between GPS samples and does not affect Analytics, consumption or range calculations.
+- Added safeguards for GPS jitter (<12 m => stationary), very short/old sample intervals, and implausible jumps (>320 km/h). Motion becomes stale after 10 minutes without a usable update.
+- Added GPS average speed and movement status/direction to the vehicle popup and vehicle panel. Remaining-range labels show the current GPS average speed as a second line when available.
+- Latitude/longitude timestamps are now part of the map-card state signature so stationary GPS refreshes can update motion status without causing POI network requests.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.49.js?v=0.1.49`.
+
 ## 0.1.48
 
 - Route planning now supports up to 9 intermediate stops internally in Cardata, including map display, browser state and global route templates.

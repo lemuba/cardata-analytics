@@ -38,8 +38,8 @@ from .route_data import async_register_websocket as async_register_route_websock
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.48.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.48"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.49.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.49"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
