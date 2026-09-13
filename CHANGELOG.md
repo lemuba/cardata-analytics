@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.46
+
+- Hotfix for vehicle-centered POIs disappearing during driving/route planning: GPS movement no longer clears the last successful POI layer merely because the rounded vehicle-center key changed by a few metres.
+- POIs from the same selected vehicle remain visible while the configured movement threshold decides when a refresh is needed and also remain visible while that refresh is in flight; successful fresh results replace them atomically.
+- Switching the POI center to a different vehicle still suppresses the previous vehicle's POIs. Existing strict route-center identity behavior and map-center behavior are unchanged.
+- No additional POI/Overpass/OCM requests are introduced. The general POI search text remains local-only.
+- Analytics, Daily Ledger, vehicle/range calculations and the protected files `controller.py`, `sensor.py`, `date.py`, `select.py` and `const.py` are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.46.js?v=0.1.46`.
+
 ## 0.1.45
 
 - POI 2.0 removes all built-in standard POI templates from the map UI. The selector now contains only **Aktuelle Filter** and user-created global templates stored in Home Assistant. Existing custom templates remain compatible.
