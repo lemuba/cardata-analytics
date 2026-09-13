@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.54
+
+- Routing start point is no longer limited to a GPS-capable vehicle.
+- Added start from current smartphone/browser geolocation, with explicit permission request, accuracy information and location age.
+- Added saved global Cardata destinations and Home Assistant zones as route starts.
+- Address-search results can now be used as start, waypoint or destination.
+- Free map points can now be selected as route start.
+- Route templates persist the start type while remaining compatible with older vehicle-only templates; smartphone templates refresh the device position when loaded.
+- Route map markers and Fit now include the selected start point.
+- Fixed route address input losing text/focus/cursor during vehicle movement or other Home Assistant state updates.
+- Updated the Nominatim User-Agent to the current release.
+- Existing Analytics, Daily Ledger, POI, vehicle calculations and 9/3/9 waypoint behavior remain unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.54.js?v=0.1.54`.
+
 ## 0.1.53
 
 - Fixed wide-radius general POI refreshes (for example Restaurants & Fast Food at 100 km) being reported as a misleading empty result when all Overpass endpoints timed out.

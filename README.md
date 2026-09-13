@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.53  
+> **Current release:** v0.1.54  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.53; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.54; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -280,7 +280,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.53.js?v=0.1.53
+  - url: /cardata_analytics/cardata-analytics-card-0.1.54.js?v=0.1.54
     type: module
 ```
 
@@ -555,7 +555,9 @@ Available popup actions include Google Maps, Navigation and the original OSM obj
 
 Open the **Route** panel from the map toolbar.
 
-The origin is always the **current GPS position of the selected Cardata vehicle**. Saved route templates keep the selected start vehicle, not an old frozen start coordinate.
+The route **start point is freely selectable**. You can use a GPS-capable Cardata vehicle, the current smartphone/browser location, a globally saved Cardata place, a Home Assistant zone, an address-search result or a point selected directly on the map. This also allows route planning for vehicles that do not provide GPS data.
+
+Saved route templates preserve the selected start type. Vehicle starts always use the vehicle's current GPS position, while smartphone starts request a fresh device location when the template is loaded instead of storing an old phone coordinate.
 
 ![Cardata route planning with intermediate stops, address search and map selection](docs/images/route-planning.png)
 
@@ -580,9 +582,16 @@ The route planner includes an explicit address/place search. The query is sent t
 
 Results can be:
 
+- used as the route start
 - inserted as the next intermediate stop
 - used as the destination
 - saved globally as a named destination
+
+## Smartphone and saved-place starts
+
+For vehicles without GPS data, the route planner can request the current browser/smartphone location through the standard device geolocation permission. The location is requested only when you explicitly choose the smartphone start. The UI shows the captured position age and, where available, the browser-reported accuracy.
+
+Globally saved Cardata destinations and Home Assistant zones can also be reused as route starts.
 
 ## Free map points
 

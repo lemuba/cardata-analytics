@@ -50,10 +50,20 @@ _POINT_SCHEMA = vol.Schema(
     extra=vol.PREVENT_EXTRA,
 )
 
+_ROUTE_START_SCHEMA = vol.Schema(
+    {
+        vol.Required("type"): vol.In(["vehicle", "device", "saved", "zone", "address", "map"]),
+        vol.Optional("vehicleId", default=""): vol.All(str, vol.Length(max=160)),
+        vol.Optional("point"): _POINT_SCHEMA,
+    },
+    extra=vol.PREVENT_EXTRA,
+)
+
 _ROUTE_TEMPLATE_SCHEMA = vol.Schema(
     {
         vol.Required("name"): vol.All(str, vol.Length(min=1, max=80)),
         vol.Optional("vehicleId", default=""): vol.All(str, vol.Length(max=160)),
+        vol.Optional("start"): _ROUTE_START_SCHEMA,
         vol.Optional("waypoints", default=[]): vol.All([_POINT_SCHEMA], vol.Length(max=9)),
         vol.Required("destination"): _POINT_SCHEMA,
     },
@@ -272,7 +282,7 @@ async def _async_geocode(hass: HomeAssistant, query: str, limit: int) -> list[di
         if language:
             params["accept-language"] = str(language)
         headers = {
-            "User-Agent": "CardataAnalytics/0.1.44 (+https://github.com/lemuba/cardata-analytics)"
+            "User-Agent": "CardataAnalytics/0.1.54 (+https://github.com/lemuba/cardata-analytics)"
         }
         domain_data[DATA_NOMINATIM_LAST_REQUEST] = monotonic()
         session = async_get_clientsession(hass)
