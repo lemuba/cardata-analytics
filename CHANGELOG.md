@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.57
+
+- Replaced the OSM+ use of the public `tile.openstreetmap.org` raster service with the API-key-free **OpenFreeMap Bright** vector style.
+- Removed the v0.1.56 `transformRequest` / referrer-policy workaround because it did not prevent OSM 403 tiles in all Home Assistant/iPad WebView environments.
+- Normal **OSM** remains OpenFreeMap Liberty; **OSM+** now provides the denser Bright rendering while staying fully inside the existing MapLibre architecture.
+- Topo, Satellite, GPS Follow, vehicle markers, range rings, POIs, clustering and routing overlays are unchanged.
+- Updated README documentation and external-service notes to reflect the new OSM+ provider.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.57.js?v=0.1.57`.
+
 ## 0.1.56
 
 - Fixed **OSM+** requests being rejected with OpenStreetMap 403 `Access blocked` tiles in Home Assistant/browser environments with restrictive referrer handling.

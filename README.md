@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.56  
+> **Current release:** v0.1.57  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.56; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.57; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -25,7 +25,7 @@ The integration does **not** connect directly to a vehicle manufacturer. It work
 - Home Assistant long-term statistics support
 - Responsive automatic analytics card for all configured vehicles
 - Interactive **MapLibre** vehicle map
-- OpenFreeMap Liberty, detailed OpenStreetMap Standard (`OSM+`), OpenTopoMap and Esri satellite layers
+- OpenFreeMap Liberty, detailed OpenFreeMap Bright (`OSM+`), OpenTopoMap and Esri satellite layers
 - Multiple vehicles with deterministic colours and coloured markers
 - Live remaining-range rings per vehicle
 - Continuous GPS follow while keeping the selected zoom level
@@ -280,7 +280,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.56.js?v=0.1.56
+  - url: /cardata_analytics/cardata-analytics-card-0.1.57.js?v=0.1.57
     type: module
 ```
 
@@ -364,7 +364,7 @@ For general OSM POIs, free-text typing remains **local** and does not trigger Ov
 
 ## Map layers
 
-The map offers three display modes:
+The map offers four base-map display modes:
 
 ### OSM
 
@@ -372,7 +372,7 @@ The normal **OSM** mode uses the existing **OpenFreeMap Liberty** vector style b
 
 ### OSM+ (detailed)
 
-**OSM+** adds the classic, more detailed OpenStreetMap Standard raster rendering (`tile.openstreetmap.org`) as an alternative base map. It is useful when you want denser road and place-name detail while keeping all Cardata overlays, vehicles, range rings, POIs and routing unchanged. OpenStreetMap attribution remains visible on the map. Cardata keeps this inside the existing MapLibre architecture and applies an origin referrer policy only to the official OSM tile requests, which avoids Home Assistant/browser referrer-policy combinations being rejected by the public OSM tile service.
+**OSM+** uses the **OpenFreeMap Bright** vector style as a more detailed alternative to the normal Liberty view. It keeps the same OpenStreetMap/OpenMapTiles data basis and MapLibre rendering engine, but shows a denser road and place-name presentation without using the public `tile.openstreetmap.org` raster service. No map API key is required. All Cardata overlays, vehicles, range rings, POIs, clustering and routing remain unchanged when switching between OSM and OSM+.
 
 ### Topo
 
@@ -718,8 +718,7 @@ Depending on the features you use, the following external services may receive r
 
 | Service | Used for | When data is sent |
 |---|---|---|
-| OpenFreeMap | Liberty vector base map | When OSM mode is used |
-| OpenStreetMap Standard tile server | Detailed raster base map | When OSM+ mode is used |
+| OpenFreeMap | Liberty (`OSM`) and Bright (`OSM+`) vector base maps | When OSM or OSM+ mode is used |
 | OpenTopoMap | Topographic map | When Topo mode is used |
 | Esri World Imagery | Default satellite imagery | When Satellite mode is used |
 | OpenStreetMap Nominatim | Reverse geocoding / explicit address search | Only when address functionality is used |
