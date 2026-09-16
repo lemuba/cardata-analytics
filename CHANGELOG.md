@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.62
+
+- Added a hide/show toggle for the on-map 3D control panel so the terrain controls no longer consume permanent space on small smartphone screens.
+- When hidden, a compact floating **3D** button remains available on the map and reopens the full terrain control panel with one tap.
+- The 3D control visibility state is persisted in the existing browser-local map preferences, independently from compass visibility.
+- Existing 3D features from v0.1.61 remain unchanged: rotation/bearing control, drag rotation, touch rotation, compass toggle, north reset, DEM elevation readout and hillshaded terrain.
+- OSM, OSM+, Topo, Satellite, DEM/hillshade, POIs, routing, Analytics, Daily Ledger and vehicle calculations remain unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.62.js?v=0.1.62`.
+
 ## 0.1.60
 
 - 3D terrain now adds a MapLibre hillshade layer from the existing AWS Terrarium DEM so ridges, valleys and slopes remain visually readable on top of the OpenFreeMap surface.
