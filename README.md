@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.57  
+> **Current release:** v0.1.58  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.57; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.58; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -25,7 +25,7 @@ The integration does **not** connect directly to a vehicle manufacturer. It work
 - Home Assistant long-term statistics support
 - Responsive automatic analytics card for all configured vehicles
 - Interactive **MapLibre** vehicle map
-- OpenFreeMap Liberty, detailed OpenFreeMap Bright (`OSM+`), OpenTopoMap and Esri satellite layers
+- OpenFreeMap Liberty, detailed OpenFreeMap Bright (`OSM+`), OpenTopoMap, Esri satellite and optional 3D terrain
 - Multiple vehicles with deterministic colours and coloured markers
 - Live remaining-range rings per vehicle
 - Continuous GPS follow while keeping the selected zoom level
@@ -280,7 +280,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.57.js?v=0.1.57
+  - url: /cardata_analytics/cardata-analytics-card-0.1.58.js?v=0.1.58
     type: module
 ```
 
@@ -364,7 +364,7 @@ For general OSM POIs, free-text typing remains **local** and does not trigger Ov
 
 ## Map layers
 
-The map offers four base-map display modes:
+The map offers four flat base-map styles plus a dedicated **3D terrain** view. **GPS Follow** is a camera/follow mode and reuses the last selected flat or 3D map style:
 
 ### OSM
 
@@ -381,6 +381,12 @@ Topographic display based on **OpenTopoMap**.
 ### Satellite
 
 Satellite mode uses **Esri World Imagery** by default without requiring a Cardata API key. The map displays the required imagery attribution.
+
+### 3D terrain
+
+The **3D** mode keeps the existing MapLibre/OpenFreeMap architecture and adds an elevation mesh from the public AWS Terrarium elevation tiles. Cardata uses the normal Liberty vector map as the surface, tilts the camera to a fixed 50° perspective and applies moderate 1.5× terrain exaggeration. No additional API key is required.
+
+The 3D view is intentionally a map-view mode rather than a separate navigation engine: vehicle markers, remaining-range rings, POIs, clustering, route start/waypoint/destination markers and GPS Follow continue to use the same Cardata map data. Leaving 3D returns the camera to the normal north-up 2D view. If GPS Follow is activated while 3D was the last selected map style, follow continues in the 3D terrain view.
 
 A custom HTTPS satellite tile provider can optionally be configured:
 
@@ -718,7 +724,8 @@ Depending on the features you use, the following external services may receive r
 
 | Service | Used for | When data is sent |
 |---|---|---|
-| OpenFreeMap | Liberty (`OSM`) and Bright (`OSM+`) vector base maps | When OSM or OSM+ mode is used |
+| OpenFreeMap | Liberty (`OSM`/`3D`) and Bright (`OSM+`) vector base maps | When OSM, OSM+ or 3D mode is used |
+| AWS Open Data Terrarium tiles | Elevation mesh for the 3D terrain view | Only when 3D mode is used |
 | OpenTopoMap | Topographic map | When Topo mode is used |
 | Esri World Imagery | Default satellite imagery | When Satellite mode is used |
 | OpenStreetMap Nominatim | Reverse geocoding / explicit address search | Only when address functionality is used |

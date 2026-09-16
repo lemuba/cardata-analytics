@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.58
+
+- Added a dedicated **3D terrain** map mode while keeping MapLibre as the single map engine.
+- 3D uses the existing OpenFreeMap Liberty vector surface plus public AWS Terrarium raster-DEM elevation tiles; no additional API key is required.
+- The 3D camera uses a fixed 50° pitch and moderate 1.5× terrain exaggeration, and returns to north-up 2D when another base-map mode is selected.
+- Vehicle markers, remaining-range rings, POIs, clustering, route markers and route planning stay on the existing Cardata MapLibre layers in 3D.
+- GPS Follow can continue in 3D when 3D was the last selected free map mode.
+- Existing OSM, OSM+, Topo and Satellite providers are unchanged. Analytics, Daily Ledger, POI queries, routing data and vehicle calculations are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.58.js?v=0.1.58`.
+
 ## 0.1.57
 
 - Replaced the OSM+ use of the public `tile.openstreetmap.org` raster service with the API-key-free **OpenFreeMap Bright** vector style.
