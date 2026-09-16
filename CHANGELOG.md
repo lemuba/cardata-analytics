@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.56
+
+- Fixed **OSM+** requests being rejected with OpenStreetMap 403 `Access blocked` tiles in Home Assistant/browser environments with restrictive referrer handling.
+- Added a narrowly scoped MapLibre `transformRequest` rule that applies `referrerPolicy: "origin"` only to `https://tile.openstreetmap.org/` requests.
+- OpenFreeMap Liberty, OpenTopoMap, Esri Satellite and all other MapLibre/network requests keep their existing default request behaviour.
+- No fallback provider or second map engine was added; OSM+ remains the classic OpenStreetMap Standard raster map inside the existing MapLibre architecture.
+- Analytics, Daily Ledger, POI search, routing, GPS Follow/Motion and vehicle calculations are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.56.js?v=0.1.56`.
+
 ## 0.1.55
 
 - Added a new **OSM+** detailed base-map mode using the classic OpenStreetMap Standard raster tiles (`tile.openstreetmap.org`), matching the denser road/place-name rendering requested for the vehicle map.

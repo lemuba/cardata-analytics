@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.55  
+> **Current release:** v0.1.56  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.55; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.56; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -280,7 +280,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.55.js?v=0.1.55
+  - url: /cardata_analytics/cardata-analytics-card-0.1.56.js?v=0.1.56
     type: module
 ```
 
@@ -372,7 +372,7 @@ The normal **OSM** mode uses the existing **OpenFreeMap Liberty** vector style b
 
 ### OSM+ (detailed)
 
-**OSM+** adds the classic, more detailed OpenStreetMap Standard raster rendering (`tile.openstreetmap.org`) as an alternative base map. It is useful when you want denser road and place-name detail while keeping all Cardata overlays, vehicles, range rings, POIs and routing unchanged. OpenStreetMap attribution remains visible on the map.
+**OSM+** adds the classic, more detailed OpenStreetMap Standard raster rendering (`tile.openstreetmap.org`) as an alternative base map. It is useful when you want denser road and place-name detail while keeping all Cardata overlays, vehicles, range rings, POIs and routing unchanged. OpenStreetMap attribution remains visible on the map. Cardata keeps this inside the existing MapLibre architecture and applies an origin referrer policy only to the official OSM tile requests, which avoids Home Assistant/browser referrer-policy combinations being rejected by the public OSM tile service.
 
 ### Topo
 
