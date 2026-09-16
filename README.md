@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.58  
+> **Current release:** v0.1.59  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.58; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.59; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -280,7 +280,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.58.js?v=0.1.58
+  - url: /cardata_analytics/cardata-analytics-card-0.1.59.js?v=0.1.59
     type: module
 ```
 
@@ -384,9 +384,11 @@ Satellite mode uses **Esri World Imagery** by default without requiring a Cardat
 
 ### 3D terrain
 
-The **3D** mode keeps the existing MapLibre/OpenFreeMap architecture and adds an elevation mesh from the public AWS Terrarium elevation tiles. Cardata uses the normal Liberty vector map as the surface, tilts the camera to a fixed 50° perspective and applies moderate 1.5× terrain exaggeration. No additional API key is required.
+The **3D** mode keeps the existing MapLibre/OpenFreeMap architecture and adds a real elevation mesh from the public AWS Terrarium elevation tiles. In v0.1.59 the DEM tiles are fetched through Cardata's dedicated `cardata-dem://` MapLibre protocol instead of being requested directly by the renderer. The protocol performs a normal CORS fetch and keeps successfully loaded DEM tiles in a browser-local IndexedDB cache when that storage is available. No additional API key is required.
 
-The 3D view is intentionally a map-view mode rather than a separate navigation engine: vehicle markers, remaining-range rings, POIs, clustering, route start/waypoint/destination markers and GPS Follow continue to use the same Cardata map data. Leaving 3D returns the camera to the normal north-up 2D view. If GPS Follow is activated while 3D was the last selected map style, follow continues in the 3D terrain view.
+A compact 3D control appears on the map while the terrain view is active. **Pitch** can be adjusted from 0° to 75° and **terrain exaggeration** from 1.0× (real elevation ratio) to 3.0×. The defaults remain 50° and 1.5×, and the reset button restores those defaults. These two preferences are stored together with the existing map-card browser preferences. OpenFreeMap building extrusions can remain visible at the same time; the terrain mesh itself comes from the separate Terrarium DEM source.
+
+The 3D view is intentionally a map-view mode rather than a separate navigation engine: vehicle markers, remaining-range rings, POIs, clustering, route start/waypoint/destination markers and GPS Follow continue to use the same Cardata map data. Leaving 3D returns the camera to the normal north-up 2D view. If GPS Follow is activated while 3D was the last selected map style, follow continues in the 3D terrain view with the saved pitch and terrain exaggeration.
 
 A custom HTTPS satellite tile provider can optionally be configured:
 

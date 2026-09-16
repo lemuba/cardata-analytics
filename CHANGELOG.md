@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.59
+
+- Reworked the 3D terrain DEM path to use a dedicated `cardata-dem://` MapLibre protocol with controlled CORS fetching, matching the robust request pattern proven in the supplied Bosch eBike 3D implementation.
+- Successfully fetched AWS Terrarium DEM tiles are cached in browser-local IndexedDB when available; private/hardened browser modes fall back to uncached network fetching instead of disabling terrain.
+- Added an on-map 3D control for adjustable camera pitch from 0° to 75° and terrain exaggeration from 1.0× to 3.0×. Defaults remain 50° / 1.5× and can be restored with one reset button.
+- 3D pitch and terrain exaggeration are persisted in the existing map-card browser preferences and remain active when GPS Follow reuses the 3D map mode.
+- Raised MapLibre's terrain-view pitch ceiling to 80° while leaving 2D modes north-up and flat.
+- OSM, OSM+, Topo, Satellite, vehicle overlays, POIs, routing, Analytics, Daily Ledger and vehicle calculations are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.59.js?v=0.1.59`.
+
 ## 0.1.58
 
 - Added a dedicated **3D terrain** map mode while keeping MapLibre as the single map engine.
