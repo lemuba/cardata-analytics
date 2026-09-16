@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.55
+
+- Added a new **OSM+** detailed base-map mode using the classic OpenStreetMap Standard raster tiles (`tile.openstreetmap.org`), matching the denser road/place-name rendering requested for the vehicle map.
+- Kept the existing OpenFreeMap Liberty vector style unchanged as the normal **OSM** mode, so no working map style is removed.
+- OSM+ runs inside the existing MapLibre map as a raster style; vehicle markers, remaining-range rings, POIs, clustering, GPS follow and routing overlays continue to use the same MapLibre data layers.
+- OSM+ supports zoom levels up to 19 and displays OpenStreetMap attribution.
+- Added OSM+ to persisted map-mode preferences and GPS follow's last-free-map mode.
+- Updated the narrow responsive map-style control from four to five slots so OSM+, Topo, Satellite and GPS remain directly reachable on small cards.
+- Analytics, Daily Ledger, POI search, route planning and vehicle calculations are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.55.js?v=0.1.55`.
+
 ## 0.1.54
 
 - Routing start point is no longer limited to a GPS-capable vehicle.
