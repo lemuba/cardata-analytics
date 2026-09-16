@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.60
+
+- 3D terrain now adds a MapLibre hillshade layer from the existing AWS Terrarium DEM so ridges, valleys and slopes remain visually readable on top of the OpenFreeMap surface.
+- Increased the Cardata terrain DEM source cap from zoom 12 to zoom 14 for finer mountain geometry while retaining the existing `cardata-dem://` loader and IndexedDB cache.
+- Added a live DEM-elevation readout for the current map centre so the UI can confirm that actual terrain data are active, independently of 3D building extrusions.
+- Existing pitch (0–75°) and terrain-exaggeration (1.0–3.0×) controls are unchanged and continue to persist with map preferences.
+- OSM, OSM+, Topo, Satellite, GPS Follow, POIs, routing, Analytics, Daily Ledger and vehicle calculations remain unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.60.js?v=0.1.60`.
+
 ## 0.1.59
 
 - Reworked the 3D terrain DEM path to use a dedicated `cardata-dem://` MapLibre protocol with controlled CORS fetching, matching the robust request pattern proven in the supplied Bosch eBike 3D implementation.
