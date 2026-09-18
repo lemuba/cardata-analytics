@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.64  
+> **Current release:** v0.1.65  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.64; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.65; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.64.js?v=0.1.64
+  - url: /cardata_analytics/cardata-analytics-card-0.1.65.js?v=0.1.65
     type: module
 ```
 
@@ -394,7 +394,7 @@ Satellite mode uses **Esri World Imagery** by default without requiring a Cardat
 
 ### 3D terrain
 
-The **3D** mode keeps the existing MapLibre/OpenFreeMap architecture and adds a real elevation mesh from the public AWS Terrarium elevation tiles. DEM tiles are fetched through Cardata's dedicated `cardata-dem://` MapLibre protocol instead of being requested directly by the renderer. The protocol performs a normal CORS fetch and keeps successfully loaded DEM tiles in a browser-local IndexedDB cache when that storage is available. No additional API key is required. In v0.1.64 the terrain source uses DEM tiles through zoom 14 for finer mountain geometry and adds a MapLibre hillshade layer from the same elevation source, making ridges, valleys and slope direction visibly easier to read.
+The **3D** mode keeps the existing MapLibre/OpenFreeMap architecture and adds a real elevation mesh from the public AWS Terrarium elevation tiles. DEM tiles are fetched through Cardata's dedicated `cardata-dem://` MapLibre protocol instead of being requested directly by the renderer. The protocol performs a normal CORS fetch and keeps successfully loaded DEM tiles in a browser-local IndexedDB cache when that storage is available. No additional API key is required. The terrain source uses DEM tiles through zoom 14 for finer mountain geometry and adds a MapLibre hillshade layer from the same elevation source, making ridges, valleys and slope direction visibly easier to read.
 
 A compact 3D control appears on the map while the terrain view is active. **Pitch** can be adjusted from 0° to 75°, **terrain exaggeration** from 1.0× (real elevation ratio) to 3.0× and **rotation/bearing** from 0° to 360°. The defaults remain 50°, 1.5× and north-up (0°). The reset button restores those view defaults. The 3D map can also be rotated directly with MapLibre's normal desktop rotation gesture (right-drag / supported modifier-drag) and with a two-finger rotation gesture on touch devices. Rotation is enabled only while 3D terrain is active; flat map modes remain north-up. Pitch, terrain exaggeration and bearing are stored with the existing map-card browser preferences.
 
@@ -416,6 +416,42 @@ satellite_max_zoom: 19
 Provider credentials, terms of use and attribution requirements remain the responsibility of the configured provider.
 
 ---
+
+## GPS Track History & Explorer
+
+Cardata Analytics can optionally record a dedicated local GPS history for each GPS-capable vehicle. Tracking is **disabled by default** and must be enabled per vehicle from the map card's **Tracking** panel. Track points are stored in Cardata's own local SQLite database under Home Assistant's `.storage` directory; the tracking subsystem does not write to the Home Assistant Recorder database and does not feed Analytics or the Daily Ledger.
+
+The Tracking panel supports a freely selectable **From date/time → To date/time** range, including exact cross-day ranges such as `01.09. 10:00` through `18.09. 12:00`. Quick presets are available for Today, Last 24 hours, Last 7 days and This month. The selected range can be displayed as one **full historical track** while Cardata keeps real GPS gaps as separate track segments instead of drawing artificial straight lines between unrelated positions.
+
+Tracking features include:
+
+- separate recording switch and retention setting per vehicle
+- retention options of 30, 90, 180, 365 days or unlimited
+- multi-vehicle historical display using Cardata's deterministic vehicle colours
+- automatic trip/segment detection based on GPS gaps and plausibility
+- trip list with start/end time, distance and point count
+- overall distance, trip count, movement duration, average GPS speed and maximum GPS speed
+- track colouring by vehicle, GPS speed or recorded SoC
+- start/end markers
+- historical playback for the selected primary vehicle
+- fit the complete selected historical track to the map
+- GPX export for the selected primary vehicle and exact selected time range
+- optional import of still-available GPS history from Home Assistant Recorder
+- deletion of Cardata tracking points for the selected vehicle(s) and selected time range
+
+The recorder uses conservative point acceptance rules: tiny GPS jitter is suppressed, points are not stored unnecessarily often, very large short-time jumps are rejected, and long gaps start a new segment instead of being connected. A low-frequency stationary heartbeat prevents loss of coverage information without turning the database into a second-by-second log. Long map queries are simplified for rendering while the accepted stored track remains available for GPX export.
+
+### GPX export
+
+GPX files contain standard latitude, longitude and UTC timestamps, plus elevation when present. Cardata also writes optional GPX extensions for SoC, GPS speed and odometer values when those values were available at the recorded point. Separate drive segments are exported as separate `<trkseg>` blocks, so stops and missing-GPS intervals remain explicit.
+
+### Recorder import
+
+The **Recorder import** action can seed Cardata's track database with GPS history that Home Assistant Recorder still retains for the configured latitude/longitude entities. Import is always user-triggered, limited to the selected time range and deduplicated, so importing the same range again does not create duplicate points.
+
+### Tracking privacy
+
+Historical GPS data are sensitive location data. Cardata therefore keeps tracking opt-in and local to the Home Assistant installation. No Cardata cloud service is used. GPX export is generated locally on request. Existing external map/POI/navigation services keep their separate behaviour and are not automatically fed the tracking database.
 
 ## Multiple vehicles
 

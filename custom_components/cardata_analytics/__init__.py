@@ -35,12 +35,17 @@ from .poi import async_register_websocket
 from .poi_templates import async_register_websocket as async_register_template_websocket
 from .route_data import async_register_websocket as async_register_route_websocket
 from .analytics_repair import async_register_websocket as async_register_analytics_repair_websocket
+from .tracking import (
+    async_register_websocket as async_register_tracking_websocket,
+    async_setup_tracking,
+    get_tracking_manager,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.64.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.64"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.65.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.65"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
@@ -126,6 +131,11 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     async_register_template_websocket(hass)
     async_register_route_websocket(hass)
     async_register_analytics_repair_websocket(hass)
+    async_register_tracking_websocket(hass)
+    try:
+        await async_setup_tracking(hass)
+    except Exception:  # pragma: no cover - tracking must never block core analytics
+        _LOGGER.exception("Could not initialize Cardata GPS tracking; core integration continues")
     frontend_path = Path(__file__).parent / "frontend"
     await hass.http.async_register_static_paths(
         [StaticPathConfig(FRONTEND_URL, str(frontend_path), False)]
@@ -241,6 +251,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime = VehicleRuntime(hass, entry, controller)
     await runtime.async_setup()
     runtimes[entry.entry_id] = runtime
+    try:
+        tracking = get_tracking_manager(hass) or await async_setup_tracking(hass)
+        await tracking.async_register_entry(entry)
+    except Exception:  # pragma: no cover - optional tracking is isolated from analytics
+        _LOGGER.exception("Could not attach GPS tracking for %s", entry.title)
     controller.register_runtime(entry.entry_id, runtime)
     entry.runtime_data = runtime
 
@@ -261,6 +276,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not unload_ok:
         return False
 
+    tracking = get_tracking_manager(hass)
+    if tracking is not None:
+        await tracking.async_unregister_entry(entry.entry_id)
     await entry.runtime_data.async_unload()
     domain_data = hass.data.get(DOMAIN, {})
     runtimes = domain_data.get(DATA_RUNTIMES, {})

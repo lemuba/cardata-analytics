@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.65
+
+- Added the new **GPS Track History & Explorer** as a subsystem isolated from Analytics, Daily Ledger, SoC repair, POI and routing calculations.
+- Added opt-in GPS recording per vehicle with local SQLite persistence and configurable 30/90/180/365-day or unlimited retention.
+- Added conservative live track-point filtering for small jitter, excessive short-time jumps, minimum sample interval and long-gap segmentation.
+- Added freely selectable From/To date and time ranges plus Today, Last 24h, Last 7 days and This month presets.
+- Added complete historical track rendering for arbitrary selected time ranges without drawing artificial lines across GPS gaps.
+- Added multi-vehicle historical track display with the existing deterministic Cardata vehicle colours.
+- Added automatic trip/segment summaries, total GPS distance, movement duration, average GPS speed and maximum GPS speed.
+- Added selectable track colouring by vehicle, speed or recorded SoC.
+- Added start/end markers, trip focus and historical playback for the selected primary vehicle.
+- Added GPX 1.1 export with separate `<trkseg>` sections and optional Cardata SoC/speed/odometer extensions.
+- Added user-triggered import of retained Home Assistant Recorder latitude/longitude history, including timestamp pairing, plausibility filtering and duplicate protection.
+- Added deletion of Cardata tracking data for selected vehicles and the selected time range.
+- Tracking is disabled by default and stores data locally; it never writes into Home Assistant Recorder and never changes Analytics/Daily Ledger values.
+- Updated README documentation and frontend resource/cache-busting filename to `cardata-analytics-card-0.1.65.js?v=0.1.65`.
+
 ## 0.1.64
 
 - Broadened historical SoC spike detection to recognize short **directional zig-zags** while the vehicle keeps moving, including patterns such as `67% → 100% → 54%`. The return no longer has to land close to the exact pre-spike value.
