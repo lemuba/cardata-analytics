@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.63
+
+- Added conservative live SoC spike protection so a short-lived high SoC excursion can no longer become a false consumption baseline when the source immediately returns to its previous level.
+- Added a per-vehicle **SoC data check** for the currently selected Analytics range. It reads the configured source SoC/odometer history from Home Assistant Recorder and creates a non-destructive repair preview.
+- Historical repair detects short-lived upward or downward SoC excursions that return near the pre-spike value. Very short round trips are treated as intrinsically implausible; longer candidates additionally require the odometer to remain effectively stationary.
+- Repair previews show the affected days, detected spike count, current Cardata energy, proposed energy and the exact kWh reduction before anything is written.
+- Applying a preview corrects only the phantom energy attributable to detected spikes, updates the affected Daily Ledger entries plus currently active Day/Week/Month/Year counters and adjusts the lifetime Cardata energy by the same delta.
+- A pre-apply backup of affected Analytics counters/ledger entries is retained in Cardata storage for diagnostics. Raw manufacturer SoC history in Home Assistant Recorder is never modified.
+- Existing Map/3D/POI/routing behavior is unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.63.js?v=0.1.63`.
+
 ## 0.1.62
 
 - Added a hide/show toggle for the on-map 3D control panel so the terrain controls no longer consume permanent space on small smartphone screens.

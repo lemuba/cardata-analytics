@@ -41,6 +41,7 @@ from .const import (
     SIGNAL_UPDATE,
 )
 from .controller import GlobalRangeController
+from .soc_filter import initial_live_guard, process_live_soc
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -246,6 +247,7 @@ class VehicleRuntime:
         self._last_valid_mileage: float | None = None
         self._last_valid_mileage_at: datetime | None = None
         self._location_refresh_task: asyncio.Task | None = None
+        self._soc_guard: dict[str, Any] = {}
 
     async def async_setup(self) -> None:
         """Load persistent data and start listeners."""
@@ -399,7 +401,20 @@ class VehicleRuntime:
                 if self._last_valid_mileage_at is not None
                 else None
             ),
+            "soc_guard": dict(stored.get("soc_guard", {})) if isinstance(stored.get("soc_guard"), dict) else {},
+            "soc_spike_last_rejected": stored.get("soc_spike_last_rejected"),
+            "soc_spike_rejected_count": int(stored.get("soc_spike_rejected_count", 0) or 0),
+            "soc_repair_last_backup": stored.get("soc_repair_last_backup"),
+            "soc_repair_last_applied": stored.get("soc_repair_last_applied"),
         }
+
+        self._soc_guard = initial_live_guard(
+            self.current_soc,
+            dt_util.utcnow(),
+            self.current_mileage,
+            self.data.get("soc_guard"),
+        )
+        self.data["soc_guard"] = self._soc_guard
 
         # Upgrading while the manufacturer source is already unavailable should
         # still work immediately.  Older Cardata Analytics versions did not
@@ -756,7 +771,7 @@ class VehicleRuntime:
                 params["accept-language"] = str(language)
             headers = {
                 "User-Agent": (
-                    "CardataAnalytics/0.1.44 "
+                    "CardataAnalytics/0.1.63 "
                     "(+https://github.com/lemuba/cardata-analytics)"
                 )
             }
@@ -1619,6 +1634,28 @@ class VehicleRuntime:
             self.hass, SIGNAL_UPDATE.format(self.entry.entry_id)
         )
 
+    def reset_soc_guard(self) -> None:
+        """Reset live SoC filtering to the currently exposed source value."""
+        self._soc_guard = initial_live_guard(
+            self.current_soc, dt_util.utcnow(), self.current_mileage, None
+        )
+        self.data["soc_guard"] = self._soc_guard
+
+    def _apply_soc_consumption_pp(self, percentage_points: float) -> bool:
+        """Convert accepted SoC decline into the existing energy counters."""
+        if percentage_points <= 0:
+            return False
+        capacity = self.battery_capacity
+        if capacity is None or not math.isfinite(capacity) or capacity <= 0:
+            return False
+        delta_kwh = percentage_points / 100.0 * capacity
+        self.data["total_kwh"] = float(self.data.get("total_kwh", 0.0)) + delta_kwh
+        for period in PERIODS:
+            self.data["periods"][period]["kwh"] = (
+                float(self.data["periods"][period].get("kwh", 0.0)) + delta_kwh
+            )
+        return True
+
     @callback
     def _async_state_changed(self, event: Event[EventStateChangedData]) -> None:
         self.hass.async_create_task(self._async_process_state_changed(event))
@@ -1639,27 +1676,38 @@ class VehicleRuntime:
         changed = self._recover_daily_history_from_period_aggregates(now, mileage) or changed
 
         if entity_id == self.entry.data[CONF_SOC_ENTITY]:
-            old_state = event.data.get("old_state")
             new_state = event.data.get("new_state")
             try:
-                old = float(old_state.state) if old_state else None
-                new = float(new_state.state) if new_state else None
+                new_soc = float(new_state.state) if new_state else None
             except (TypeError, ValueError):
-                old = new = None
+                new_soc = None
 
-            capacity = self.battery_capacity
-            if (
-                old is not None
-                and new is not None
-                and capacity is not None
-                and 0 <= new < old <= 100
-                and capacity > 0
-            ):
-                delta_kwh = (old - new) / 100.0 * capacity
-                self.data["total_kwh"] = float(self.data.get("total_kwh", 0.0)) + delta_kwh
-                for period in PERIODS:
-                    self.data["periods"][period]["kwh"] = float(self.data["periods"][period].get("kwh", 0.0)) + delta_kwh
+            if new_soc is not None and math.isfinite(new_soc) and 0 <= new_soc <= 100:
+                sample_time = getattr(new_state, "last_updated", None)
+                when = (
+                    dt_util.as_utc(sample_time)
+                    if isinstance(sample_time, datetime)
+                    else dt_util.utcnow()
+                )
+                self._soc_guard, consumed_pp, rejected = process_live_soc(
+                    self._soc_guard, new_soc, when, mileage
+                )
+                self.data["soc_guard"] = self._soc_guard
                 changed = True
+                if self._apply_soc_consumption_pp(consumed_pp):
+                    changed = True
+                if rejected is not None:
+                    self.data["soc_spike_last_rejected"] = rejected
+                    self.data["soc_spike_rejected_count"] = (
+                        int(self.data.get("soc_spike_rejected_count", 0) or 0) + 1
+                    )
+                    _LOGGER.warning(
+                        "Ignored transient SoC spike for %s: %.1f%% -> %.1f%% -> %.1f%%",
+                        self.entry.title,
+                        float(rejected.get("baseline_soc", 0.0)),
+                        float(rejected.get("peak_soc", 0.0)),
+                        float(rejected.get("return_soc", 0.0)),
+                    )
 
         if changed:
             await self.store.async_save(self.data)
