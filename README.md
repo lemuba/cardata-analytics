@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.63  
+> **Current release:** v0.1.64  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.63; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.64; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -268,11 +268,11 @@ If Home Assistant was offline around a day boundary and the exact result cannot 
 
 Some upstream vehicle integrations occasionally publish a short-lived incorrect SoC value, for example `52 % → 100 % → 45 %` while the vehicle has not meaningfully moved. Without filtering, the fall from the false 100% value can be mistaken for real battery consumption and inflate Today/Week/Month/Year and selected-period energy.
 
-From v0.1.63 Cardata Analytics adds a conservative live guard for this specific failure mode. Large short-lived upward excursions are held back briefly and are rejected when the SoC quickly returns near its previous value. Extremely short round trips are treated as implausible even while the vehicle is moving; longer candidates additionally require the odometer to remain effectively stationary. Normal driving and genuine charging remain the accepted baseline.
+From v0.1.64 Cardata Analytics uses a directional short-zig-zag guard for this failure mode. A false high source value may return **below** the exact pre-spike SoC because the vehicle can keep consuming energy while the bad sample is present. For example, `67 % → 100 % → 54 %` is treated as the real `67 % → 54 %` decline when the 100% pulse is short. Repeated short pulses are evaluated independently. Very short round trips can be rejected even while the odometer advances; outside the hard short window Cardata keeps the more conservative odometer/stability checks. Normal monotonic driving and genuine charging remain accepted.
 
-The Analytics card also provides **SoC data check** below each vehicle. The check always uses the **currently selected comparison range** (for example Last 7 days), reads the configured source SoC and odometer history from Home Assistant Recorder and shows a preview before changing anything. The preview lists detected spikes by day, the current Cardata energy, the proposed corrected value and the exact kWh reduction.
+The Analytics card also provides **SoC data check** below each vehicle. The check always uses the **currently selected comparison range** (for example Last 7 days), reads the configured source SoC and odometer history from Home Assistant Recorder and shows a preview before changing anything. The preview lists detected spikes by day, the current Cardata energy, the proposed corrected value and the exact additional kWh reduction. A day that was already repaired can still appear in the preview, but it is marked as already corrected and is not subtracted again.
 
-Applying the preview changes only Cardata Analytics data: affected Daily Ledger entries, currently active Day/Week/Month/Year energy buckets and the lifetime Cardata consumed-energy total are adjusted by the detected phantom-energy delta. Cardata stores a diagnostic backup of the pre-repair counters/ledger entries. The original manufacturer/source SoC history in Home Assistant Recorder is **not edited or deleted**. If Recorder does not contain enough source history, Cardata refuses the repair instead of guessing.
+Applying the preview changes only Cardata Analytics data: affected Daily Ledger entries, currently active Day/Week/Month/Year energy buckets and the lifetime Cardata consumed-energy total are adjusted by the newly detected phantom-energy delta. Cardata stores a diagnostic backup plus a per-day cumulative repair ledger. This makes repeated analyses/applications idempotent: previously removed spike energy is not removed a second time, while a later improved detector may still offer only the newly discovered remainder. The original manufacturer/source SoC history in Home Assistant Recorder is **not edited or deleted**. If Recorder does not contain enough source history, Cardata refuses the repair instead of guessing.
 
 ### Temporary source outages
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.63.js?v=0.1.63
+  - url: /cardata_analytics/cardata-analytics-card-0.1.64.js?v=0.1.64
     type: module
 ```
 
@@ -394,7 +394,7 @@ Satellite mode uses **Esri World Imagery** by default without requiring a Cardat
 
 ### 3D terrain
 
-The **3D** mode keeps the existing MapLibre/OpenFreeMap architecture and adds a real elevation mesh from the public AWS Terrarium elevation tiles. DEM tiles are fetched through Cardata's dedicated `cardata-dem://` MapLibre protocol instead of being requested directly by the renderer. The protocol performs a normal CORS fetch and keeps successfully loaded DEM tiles in a browser-local IndexedDB cache when that storage is available. No additional API key is required. In v0.1.63 the terrain source uses DEM tiles through zoom 14 for finer mountain geometry and adds a MapLibre hillshade layer from the same elevation source, making ridges, valleys and slope direction visibly easier to read.
+The **3D** mode keeps the existing MapLibre/OpenFreeMap architecture and adds a real elevation mesh from the public AWS Terrarium elevation tiles. DEM tiles are fetched through Cardata's dedicated `cardata-dem://` MapLibre protocol instead of being requested directly by the renderer. The protocol performs a normal CORS fetch and keeps successfully loaded DEM tiles in a browser-local IndexedDB cache when that storage is available. No additional API key is required. In v0.1.64 the terrain source uses DEM tiles through zoom 14 for finer mountain geometry and adds a MapLibre hillshade layer from the same elevation source, making ridges, valleys and slope direction visibly easier to read.
 
 A compact 3D control appears on the map while the terrain view is active. **Pitch** can be adjusted from 0° to 75°, **terrain exaggeration** from 1.0× (real elevation ratio) to 3.0× and **rotation/bearing** from 0° to 360°. The defaults remain 50°, 1.5× and north-up (0°). The reset button restores those view defaults. The 3D map can also be rotated directly with MapLibre's normal desktop rotation gesture (right-drag / supported modifier-drag) and with a two-finger rotation gesture on touch devices. Rotation is enabled only while 3D terrain is active; flat map modes remain north-up. Pitch, terrain exaggeration and bearing are stored with the existing map-card browser preferences.
 

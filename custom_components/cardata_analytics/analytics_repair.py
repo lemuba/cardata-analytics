@@ -153,6 +153,52 @@ def _old_day_kwh(runtime: Any, day: date, today: date) -> tuple[float | None, di
         return None, None
 
 
+def _applied_repair_excess_by_day(runtime: Any) -> dict[str, float]:
+    """Return cumulative already-applied spike energy per local day.
+
+    v0.1.64 stores this explicitly. As a one-time compatibility bridge for a
+    v0.1.63 repair, also read its last-applied change list so re-analyzing the
+    same day cannot subtract the same correction again after upgrading.
+    """
+    result: dict[str, float] = {}
+    raw = runtime.data.get("soc_repair_days", {})
+    if isinstance(raw, dict):
+        for key, item in raw.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                value = max(0.0, float(item.get("applied_excess_kwh", 0.0)))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                result[str(key)] = value
+
+    legacy = runtime.data.get("soc_repair_last_applied")
+    if isinstance(legacy, dict):
+        changes = legacy.get("changes")
+        if isinstance(changes, list):
+            for change in changes:
+                if not isinstance(change, dict):
+                    continue
+                key = str(change.get("date") or "")
+                try:
+                    value = max(0.0, float(change.get("reduction_kwh", 0.0)))
+                except (TypeError, ValueError):
+                    continue
+                if key and value > result.get(key, 0.0):
+                    result[key] = value
+    return result
+
+
+def _repair_day_state(runtime: Any, key: str) -> dict[str, Any]:
+    raw = runtime.data.setdefault("soc_repair_days", {})
+    item = raw.get(key)
+    if not isinstance(item, dict):
+        item = {}
+        raw[key] = item
+    return item
+
+
 def _selected_rows(
     runtime: Any,
     start_day: date,
@@ -162,6 +208,7 @@ def _selected_rows(
     spikes_by_day: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     today = dt_util.now().date()
+    already_applied = _applied_repair_excess_by_day(runtime)
     rows: list[dict[str, Any]] = []
     day = start_day
     while day <= end_day:
@@ -171,9 +218,13 @@ def _selected_rows(
         corrected_raw_kwh = max(0.0, float(clean_energy.get(key, 0.0)))
         detected = spikes_by_day.get(key, [])
         spike_excess = max(0.0, raw_kwh - corrected_raw_kwh) if detected else 0.0
-        repairable = old_kwh is not None and spike_excess > 0.001
+        applied_excess = max(0.0, float(already_applied.get(key, 0.0)))
+        # The detector reports the total phantom energy visible in Recorder.
+        # Only the portion not already removed from Cardata may be subtracted.
+        unapplied_excess = max(0.0, spike_excess - applied_excess)
+        repairable = old_kwh is not None and unapplied_excess > 0.001
         proposed = (
-            max(0.0, old_kwh - spike_excess)
+            max(0.0, old_kwh - unapplied_excess)
             if repairable and old_kwh is not None
             else old_kwh
         )
@@ -190,6 +241,8 @@ def _selected_rows(
                 "raw_history_kwh": round(raw_kwh, 4),
                 "filtered_history_kwh": round(corrected_raw_kwh, 4),
                 "detected_excess_kwh": round(spike_excess, 4),
+                "already_repaired_kwh": round(min(applied_excess, spike_excess), 4),
+                "unapplied_excess_kwh": round(unapplied_excess, 4),
                 "current_cardata_kwh": round(old_kwh, 4) if old_kwh is not None else None,
                 "proposed_cardata_kwh": round(proposed, 4) if proposed is not None else None,
                 "reduction_kwh": round(effective_reduction, 4),
@@ -331,6 +384,7 @@ async def _apply(hass: HomeAssistant, runtime: Any, preview: dict[str, Any]) -> 
         "total_kwh": runtime.data.get("total_kwh"),
         "periods": deepcopy(runtime.data.get("periods", {})),
         "daily_history": {},
+        "soc_repair_days": deepcopy(runtime.data.get("soc_repair_days", {})),
     }
 
     for row in preview.get("rows", []):
@@ -354,7 +408,7 @@ async def _apply(hass: HomeAssistant, runtime: Any, preview: dict[str, Any]) -> 
             backup["daily_history"][key] = deepcopy(history_item)
             updated = dict(history_item)
             updated["kwh"] = round(proposed, 6)
-            updated["source"] = "soc_repair_0.1.63"
+            updated["source"] = "soc_repair_0.1.64"
             updated["recovered_from"] = "recorder_soc_spike_filter"
             runtime.data["daily_history"][key] = updated
 
@@ -365,6 +419,20 @@ async def _apply(hass: HomeAssistant, runtime: Any, preview: dict[str, Any]) -> 
                     max(0.0, float(pdata.get("kwh", 0.0)) - effective_reduction), 6
                 )
 
+        repair_state = _repair_day_state(runtime, key)
+        previous_applied = max(
+            0.0,
+            float(_applied_repair_excess_by_day(runtime).get(key, 0.0)),
+        )
+        cumulative_applied = previous_applied + effective_reduction
+        repair_state.update(
+            applied_excess_kwh=round(cumulative_applied, 6),
+            last_detected_excess_kwh=round(float(row.get("detected_excess_kwh", 0.0)), 6),
+            last_applied_at=dt_util.utcnow().isoformat(),
+            spike_count=int(row.get("spike_count", 0)),
+            detector_version="0.1.64",
+        )
+
         total_reduction += effective_reduction
         changes.append(
             {
@@ -373,6 +441,7 @@ async def _apply(hass: HomeAssistant, runtime: Any, preview: dict[str, Any]) -> 
                 "after_kwh": round(proposed, 4),
                 "reduction_kwh": round(effective_reduction, 4),
                 "spike_count": int(row.get("spike_count", 0)),
+                "cumulative_repaired_kwh": round(cumulative_applied, 4),
             }
         )
 

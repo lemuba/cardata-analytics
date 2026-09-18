@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.64
+
+- Broadened historical SoC spike detection to recognize short **directional zig-zags** while the vehicle keeps moving, including patterns such as `67% → 100% → 54%`. The return no longer has to land close to the exact pre-spike value.
+- Repeated short spikes in the same driving period are detected independently instead of the first spike masking the next one.
+- Increased the hard short-spike observation window to 30 minutes while retaining conservative odometer/stability checks outside that window.
+- The live guard uses the same directional return principle for large upward source glitches, so a false high value cannot become the next consumption baseline merely because the real SoC continued falling while driving.
+- Historical repair is now **idempotent per day**. Cardata persists the cumulative phantom-energy correction already applied for each date and only offers newly detected, not-yet-applied energy on later analyses.
+- Added a v0.1.63 compatibility bridge: the last v0.1.63 repair result is recognized as already applied after upgrading, preventing the same correction from being subtracted again.
+- Repair previews distinguish days whose detected spike energy has already been corrected from days with an additional correction still available.
+- Existing Map/3D/OSM/OSM+/Topo/Satellite, POI 2.0 and routing behavior remain unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.64.js?v=0.1.64`.
+
 ## 0.1.63
 
 - Added conservative live SoC spike protection so a short-lived high SoC excursion can no longer become a false consumption baseline when the source immediately returns to its previous level.
@@ -10,6 +22,7 @@
 - A pre-apply backup of affected Analytics counters/ledger entries is retained in Cardata storage for diagnostics. Raw manufacturer SoC history in Home Assistant Recorder is never modified.
 - Existing Map/3D/POI/routing behavior is unchanged.
 - Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.63.js?v=0.1.63`.
+
 
 ## 0.1.62
 

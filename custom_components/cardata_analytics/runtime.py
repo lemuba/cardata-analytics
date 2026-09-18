@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import asyncio
 import logging
@@ -406,6 +407,11 @@ class VehicleRuntime:
             "soc_spike_rejected_count": int(stored.get("soc_spike_rejected_count", 0) or 0),
             "soc_repair_last_backup": stored.get("soc_repair_last_backup"),
             "soc_repair_last_applied": stored.get("soc_repair_last_applied"),
+            "soc_repair_days": (
+                deepcopy(stored.get("soc_repair_days", {}))
+                if isinstance(stored.get("soc_repair_days"), dict)
+                else {}
+            ),
         }
 
         self._soc_guard = initial_live_guard(
@@ -771,7 +777,7 @@ class VehicleRuntime:
                 params["accept-language"] = str(language)
             headers = {
                 "User-Agent": (
-                    "CardataAnalytics/0.1.63 "
+                    "CardataAnalytics/0.1.64 "
                     "(+https://github.com/lemuba/cardata-analytics)"
                 )
             }

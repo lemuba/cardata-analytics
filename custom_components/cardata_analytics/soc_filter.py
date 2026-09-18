@@ -1,10 +1,12 @@
 """SoC spike filtering helpers for Cardata Analytics.
 
 The live guard is intentionally conservative: it only suppresses a large,
-short-lived upward excursion when the value quickly returns near the previous
-SoC without meaningful odometer movement. Historical repair uses the same
-physical idea for both upward and downward excursions and always presents a
-preview before any stored analytics are changed.
+short-lived upward excursion when the source quickly returns to the real
+driving trend. The return may be below the exact pre-spike value because the
+vehicle can continue consuming energy while the bad sample is present.
+Historical repair applies the same directional zig-zag idea to upward and
+downward excursions and always presents a preview before stored analytics are
+changed.
 """
 
 from __future__ import annotations
@@ -16,9 +18,13 @@ from typing import Any
 
 SOC_SPIKE_MIN_JUMP_PP = 18.0
 SOC_SPIKE_RETURN_TOLERANCE_PP = 12.0
+SOC_SPIKE_DIRECTIONAL_RETURN_TOLERANCE_PP = 8.0
 SOC_SPIKE_NO_MILEAGE_RETURN_TOLERANCE_PP = 6.0
 SOC_SPIKE_WINDOW = timedelta(minutes=45)
-SOC_SPIKE_HARD_WINDOW = timedelta(minutes=15)
+# A short zig-zag is allowed to return below (up-spike) or above (down-spike)
+# the pre-spike baseline. This matters while a vehicle is genuinely consuming
+# energy during a bad source sample, e.g. 67 -> 100 -> 54.
+SOC_SPIKE_HARD_WINDOW = timedelta(minutes=30)
 SOC_SPIKE_NO_MILEAGE_WINDOW = timedelta(minutes=20)
 SOC_SPIKE_STATIONARY_KM = 1.5
 
@@ -179,7 +185,15 @@ def process_live_soc(
         )
         window = SOC_SPIKE_WINDOW if stationary is not None else SOC_SPIKE_NO_MILEAGE_WINDOW
 
-        returned = abs(soc - baseline_soc) <= tolerance
+        # Directional return is deliberately asymmetric: after a false high
+        # sample the real vehicle may keep consuming energy, so the first valid
+        # value can be well *below* the pre-spike baseline. Requiring an
+        # absolute return near the baseline missed exactly those moving-vehicle
+        # zig-zags (67 -> 100 -> 54). The inverse applies to false low samples
+        # in historical repair.
+        returned = soc <= baseline_soc + (
+            SOC_SPIKE_DIRECTIONAL_RETURN_TOLERANCE_PP if hard_short else tolerance
+        )
         if returned and (hard_short or (age <= window and stationary is not False)):
             consumed = max(0.0, baseline_soc - soc)
             rejected = {
@@ -227,7 +241,14 @@ def process_live_soc(
     short_window = SOC_SPIKE_WINDOW if stationary is not None else SOC_SPIKE_NO_MILEAGE_WINDOW
     if (
         soc - accepted >= SOC_SPIKE_MIN_JUMP_PP
-        and (gap <= SOC_SPIKE_HARD_WINDOW or (gap <= short_window and stationary is not False))
+        and (
+            gap <= SOC_SPIKE_HARD_WINDOW
+            # A large upward SoC jump while the odometer has advanced cannot be
+            # normal charging. Hold it as a candidate even if the previous SoC
+            # state itself is older than the hard window.
+            or stationary is False
+            or (gap <= short_window and stationary is not False)
+        )
     ):
         guard["pending_high"] = {
             "started_at": when.isoformat(),
@@ -250,13 +271,18 @@ def process_live_soc(
 def filter_historical_soc(
     samples: list[SocSample],
 ) -> tuple[list[SocSample], list[dict[str, Any]]]:
-    """Remove short-lived, odometer-stationary SoC excursions.
+    """Remove short-lived SoC zig-zags while preserving genuine trends.
 
-    A candidate must jump by at least ``SOC_SPIKE_MIN_JUMP_PP`` and return near
-    the pre-jump value within the configured window. With odometer data, the car
-    must remain effectively stationary; without it the return tolerance/window
-    are deliberately much tighter. This makes the automatic proposal
-    conservative and suitable for preview-before-apply repair.
+    The important invariant is directional rather than symmetric. For an
+    upward candidate the source only has to return to or below the stable
+    pre-spike corridor; it may be substantially lower because the car can keep
+    driving while the bad sample is present. The inverse applies to a downward
+    candidate. This detects patterns such as ``67 -> 100 -> 54`` and repeated
+    pulses without mistaking normal monotonic driving/charging for a spike.
+
+    Very short round trips are accepted regardless of odometer movement. For
+    the wider fallback window we retain the conservative odometer/stability
+    checks from v0.1.63.
     """
     cleaned: list[SocSample] = []
     spikes: list[dict[str, Any]] = []
@@ -270,36 +296,53 @@ def filter_historical_soc(
         baseline = cleaned[-1]
         candidate = ordered[i + 1]
         jump = candidate.soc - baseline.soc
-        gap = candidate.when - baseline.when
-        stationary_candidate = _stationary_enough(baseline.mileage, candidate.mileage)
-        hard_candidate = gap <= SOC_SPIKE_HARD_WINDOW
-        window = SOC_SPIKE_WINDOW if stationary_candidate is not None else SOC_SPIKE_NO_MILEAGE_WINDOW
-        tolerance = (
-            SOC_SPIKE_RETURN_TOLERANCE_PP
-            if stationary_candidate is not None or hard_candidate
-            else SOC_SPIKE_NO_MILEAGE_RETURN_TOLERANCE_PP
-        )
-
-        is_candidate = (
-            abs(jump) >= SOC_SPIKE_MIN_JUMP_PP
-            and (hard_candidate or (gap <= window and stationary_candidate is not False))
-        )
-        if not is_candidate:
+        if abs(jump) < SOC_SPIKE_MIN_JUMP_PP:
             cleaned.append(candidate)
             i += 1
             continue
 
+        direction = 1 if jump > 0 else -1
         return_index: int | None = None
+        extreme = candidate
         for j in range(i + 2, len(ordered)):
             current = ordered[j]
-            if current.when - candidate.when > window:
+            age = current.when - candidate.when
+            if age > SOC_SPIKE_WINDOW:
                 break
+
+            if direction > 0 and current.soc > extreme.soc:
+                extreme = current
+            elif direction < 0 and current.soc < extreme.soc:
+                extreme = current
+
+            hard_short = age <= SOC_SPIKE_HARD_WINDOW
             stationary_return = _stationary_enough(baseline.mileage, current.mileage)
-            hard_return = current.when - candidate.when <= SOC_SPIKE_HARD_WINDOW
-            if stationary_return is False and not hard_return:
-                break
-            if abs(current.soc - baseline.soc) <= tolerance and (hard_return or stationary_return is not False):
+
+            if direction > 0:
+                directional_return = (
+                    current.soc
+                    <= baseline.soc + SOC_SPIKE_DIRECTIONAL_RETURN_TOLERANCE_PP
+                )
+            else:
+                directional_return = (
+                    current.soc
+                    >= baseline.soc - SOC_SPIKE_DIRECTIONAL_RETURN_TOLERANCE_PP
+                )
+
+            near_baseline = abs(current.soc - baseline.soc) <= SOC_SPIKE_RETURN_TOLERANCE_PP
+
+            if hard_short and directional_return:
                 return_index = j
+                break
+            if (
+                stationary_return is not False
+                and (directional_return or near_baseline)
+                and age <= SOC_SPIKE_WINDOW
+            ):
+                return_index = j
+                break
+
+            if not hard_short and stationary_return is False:
                 break
 
         if return_index is None:
@@ -310,10 +353,9 @@ def filter_historical_soc(
         returned = ordered[return_index]
         excursion = ordered[i + 1 : return_index]
         if excursion:
-            extreme = max(excursion, key=lambda s: abs(s.soc - baseline.soc))
             spikes.append(
                 {
-                    "direction": "up" if extreme.soc > baseline.soc else "down",
+                    "direction": "up" if direction > 0 else "down",
                     "baseline_soc": round(baseline.soc, 3),
                     "extreme_soc": round(extreme.soc, 3),
                     "return_soc": round(returned.soc, 3),
