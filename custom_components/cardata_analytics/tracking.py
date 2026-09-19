@@ -224,8 +224,16 @@ class TrackingManager:
         if entry.entry_id in self._unsubs:
             return
         entities = [entry.data[CONF_LATITUDE_ENTITY], entry.data[CONF_LONGITUDE_ENTITY]]
+
+        @callback
+        def _handle_gps_change(event: Event[EventStateChangedData]) -> None:
+            # The registered callable itself must be marked as a callback.
+            # An unmarked lambda runs in HA's executor, where async_create_task
+            # (and cancellation of our debounce task) is not thread-safe.
+            self._state_changed(entry.entry_id, event)
+
         self._unsubs[entry.entry_id] = async_track_state_change_event(
-            self.hass, entities, lambda event, entry_id=entry.entry_id: self._state_changed(entry_id, event)
+            self.hass, entities, _handle_gps_change
         )
         last = await self.hass.async_add_executor_job(self._last_point_db, entry.entry_id)
         if last is not None:
@@ -263,6 +271,8 @@ class TrackingManager:
             await self.async_record_current(entry_id)
         except asyncio.CancelledError:
             return
+        except Exception:  # tracking failures must not interrupt core analytics
+            _LOGGER.exception("Could not record a Cardata GPS point for %s", entry_id)
         finally:
             current = self._sample_tasks.get(entry_id)
             if current is asyncio.current_task():
@@ -414,18 +424,36 @@ class TrackingManager:
         with self._connect() as con:
             con.execute("DELETE FROM track_points WHERE vehicle_id=? AND ts<?", (entry_id, cutoff))
 
-    def _status_db(self, entry_ids: list[str]) -> dict[str, dict[str, Any]]:
+    def _status_db(
+        self, entry_ids: list[str], start_ts: float | None = None, end_ts: float | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Read committed point counts, optionally limited to an import range."""
         out: dict[str, dict[str, Any]] = {}
         with self._connect() as con:
             for entry_id in entry_ids:
+                clauses = ["vehicle_id=?"]
+                params: list[Any] = [entry_id]
+                if start_ts is not None:
+                    clauses.append("ts>=?")
+                    params.append(start_ts)
+                if end_ts is not None:
+                    clauses.append("ts<=?")
+                    params.append(end_ts)
                 row = con.execute(
-                    "SELECT COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts FROM track_points WHERE vehicle_id=?",
-                    (entry_id,),
+                    """SELECT COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts,
+                       SUM(CASE WHEN source='live' THEN 1 ELSE 0 END) AS live_count,
+                       SUM(CASE WHEN source='recorder_import' THEN 1 ELSE 0 END) AS imported_count,
+                       MAX(CASE WHEN source='live' THEN ts END) AS last_live_ts
+                       FROM track_points WHERE """ + " AND ".join(clauses),
+                    params,
                 ).fetchone()
                 out[entry_id] = {
                     "point_count": int(row["n"] or 0),
                     "first_ts": _iso_utc(row["first_ts"]) if row["first_ts"] is not None else None,
                     "last_ts": _iso_utc(row["last_ts"]) if row["last_ts"] is not None else None,
+                    "live_point_count": int(row["live_count"] or 0),
+                    "imported_point_count": int(row["imported_count"] or 0),
+                    "last_live_ts": _iso_utc(row["last_live_ts"]) if row["last_live_ts"] is not None else None,
                 }
         return out
 
@@ -554,11 +582,15 @@ class TrackingManager:
             total_distance = 0.0
             max_speed = 0.0
             for idx, segment in enumerate(full_segments):
-                if not segment:
+                # Keep raw segments (and their indices) for GPX compatibility,
+                # but isolated observations are not trips.
+                if len(segment) < 2:
                     continue
                 dist_m = self._segment_distance_m(segment)
+                trip_duration = max(0.0, segment[-1].ts - segment[0].ts)
+                trip_max_speed = max((p.speed or 0.0) for p in segment)
                 total_distance += dist_m
-                max_speed = max(max_speed, max((p.speed or 0.0) for p in segment))
+                max_speed = max(max_speed, trip_max_speed)
                 trips.append(
                     {
                         "index": idx,
@@ -566,7 +598,9 @@ class TrackingManager:
                         "end": _iso_utc(segment[-1].ts),
                         "distance_km": round(dist_m / 1000.0, 3),
                         "point_count": len(segment),
-                        "duration_seconds": max(0, round(segment[-1].ts - segment[0].ts)),
+                        "duration_seconds": round(trip_duration),
+                        "avg_speed_kmh": round(dist_m / trip_duration * 3.6, 2) if trip_duration > 0 else 0.0,
+                        "max_speed_kmh": round(trip_max_speed, 2),
                     }
                 )
             segments = self._simplify_segments(full_segments, per_vehicle)
@@ -579,7 +613,7 @@ class TrackingManager:
                     "point_count": len(points),
                     "rendered_point_count": rendered_points,
                     "distance_km": round(total_distance / 1000.0, 3),
-                    "trip_count": len([s for s in full_segments if len(s) >= 2]),
+                    "trip_count": len(trips),
                     "duration_seconds": round(duration),
                     "avg_speed_kmh": round((total_distance / 1000.0) / (duration / 3600.0), 2) if duration > 0 else 0.0,
                     "max_speed_kmh": round(max_speed, 2),
@@ -688,7 +722,22 @@ class TrackingManager:
             current_last = self._last_points.get(entry_id)
             if current_last is None or accepted[-1].ts > current_last.ts:
                 self._last_points[entry_id] = accepted[-1]
-        return {"candidates": len(candidates), "accepted": len(accepted), "inserted": inserted}
+        # The insert transaction has committed before this fresh connection is
+        # opened. This is stored data, not a count of Recorder search results.
+        stored = await self.hass.async_add_executor_job(
+            self._status_db, [entry_id], start.timestamp(), end.timestamp()
+        )
+        return {
+            "candidates": len(candidates),
+            "accepted": len(accepted),
+            "inserted": inserted,
+            "already_stored": len(accepted) - inserted,
+            "filtered": len(candidates) - len(accepted),
+            "stored": stored[entry_id],
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "vehicle_name": entry.title,
+        }
 
     def _last_point_before_db(self, entry_id: str, ts: float) -> Point | None:
         with self._connect() as con:

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.66
+
+- Fixed live GPS recording: the registered Home Assistant state-change listener is now explicitly marked as an event-loop callback, so GPS updates can safely schedule recording.
+- Isolated GPS recording failures are logged without interrupting core analytics.
+- Clicking a trip now selects only that historical track, including its start/end markers, summary, playback and GPX export. The selected row is highlighted; Show full track restores the full selected period.
+- Single-point observations remain stored and available in full-period GPX, but are excluded from the trip list, historical track display and playback. Original segment indices are preserved for API compatibility.
+- Added an explicit Up to now option and periodic refresh of the visible Tracking panel. Fixed historical ranges are preserved; refresh does not move the camera or replace a selected trip or running playback.
+- Added committed database totals split by live recording and Recorder import, latest point timestamps, and a manual stored-count refresh.
+- Recorder import now reports newly stored, already-present and filtered candidate points, followed by a fresh database read for the imported period. Exact trip bounds are used for frontend GPX export to avoid exporting a different trip after the stored segment list changes.
+- Added German/English interface text and documentation explaining recording, importing, persistence and trip selection.
+- Analytics, Daily Ledger, SoC repair, vehicle entity identifiers and GPS acceptance thresholds are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.66.js?v=0.1.66`.
+
 ## 0.1.65
 
 - Added the new **GPS Track History & Explorer** as a subsystem isolated from Analytics, Daily Ledger, SoC repair, POI and routing calculations.
