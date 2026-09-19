@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.67
+
+- Added selected-trip Start/End SoC from stored GPS points and consumption from existing Analytics energy/odometer history. New read-only trip details reuse current counters, with no new energy recording or changes to Daily Ledger, SoC filtering or repair.
+- Explicitly distinguish missing history, gaps, counter resets/corrections and repaired SoC days. Daily totals are never allocated speculatively to individual trips; average consumption uses the recorded odometer distance, which is displayed separately from GPS distance.
+- Added persistent newest/oldest-first trip sorting without changing selection, track chronology or GPX export.
+- Added an optional collapsible map legend using the exact track color bands, including a gray no-data category, and an optional zoom-aware metric map scale.
+- Replaced stepped playback with frame-based visual interpolation. Added 30-second/1-minute/2-minute duration presets and fixed speeds through 3000×; the default plays a 24-hour selection in 30 seconds.
+- Added a pause-gap toggle, fractional-position pause/resume and seeking, hidden-tab pause and frame cleanup. Static track geometry is not rebuilt on each animation frame.
+- Added free-map, north-up follow and heading-up follow camera modes. Heading transitions are smoothed through the shortest turn, stay stable when stationary, and preserve zoom/pitch. Manual panning or track fitting releases the camera; live vehicle focus stops playback.
+- Preserved the v0.1.66 live-recording, selected-trip, singleton filtering and import verification fixes. Updated DE/EN UI, documentation, version references and the physical frontend resource to `cardata-analytics-card-0.1.67.js?v=0.1.67`.
+
 ## 0.1.66
 
 - Fixed live GPS recording: the registered Home Assistant state-change listener is now explicitly marked as an event-loop callback, so GPS updates can safely schedule recording.

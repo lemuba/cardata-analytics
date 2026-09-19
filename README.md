@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.66  
+> **Current release:** v0.1.67  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.66; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.67; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.66.js?v=0.1.66
+  - url: /cardata_analytics/cardata-analytics-card-0.1.67.js?v=0.1.67
     type: module
 ```
 
@@ -445,11 +445,31 @@ Click a trip in the list to show **only that trip's historical track**. The row 
 
 Single GPS observations remain in the database and in full-period GPX exports, but are not shown as trips, driving tracks or playback stops. The trip list and trip counter both require at least two points. Trip separation still uses the existing GPS-gap/plausibility rules; a short stop does not necessarily separate an outward journey from its return.
 
+The trip list defaults to **Newest first** and can be switched to **Oldest first**. Sorting is saved in this browser and changes only the list, not the chronological track, selection or GPX export.
+
+### Trip SoC and existing Analytics consumption
+
+The selected trip shows **Start SoC**, **End SoC**, **Energy consumed (kWh)** and **Average consumption (kWh/100 km)**. SoC comes from the first/last stored GPS observations, before map simplification. Missing endpoint SoC is shown as unavailable rather than substituted with a value from another time.
+
+Consumption reuses the existing Cardata **total consumed energy** sensor history in Home Assistant Recorder, taking the counter difference between the stored GPS start and end timestamps. Average consumption uses the corresponding existing Cardata **odometer** history, not the GPS polyline distance. The calculation distance is shown alongside the source explanation because it can differ from the GPS distance. Existing entity IDs are resolved through the entity registry, including renamed entities. No new energy recording, battery-capacity estimate or changes to existing Analytics calculations are introduced.
+
+The Daily Ledger stores **daily totals**, not timestamped per-trip allocations. A retained daily total therefore cannot substitute for missing intraday counter history. A missing start state, an unavailable interval, counter reset/correction or a previously repaired SoC day is explicitly marked unavailable; daily corrections are never spread across trips or applied again. Missing/zero odometer distance leaves the average unavailable even when energy is known. The existing Analytics counters themselves retain their original SoC-based calculation and filtering; this is not a new vehicle-side energy measurement.
+
+Trip details are read on selection and require the relevant Analytics sensor history to still exist in Recorder. The separate GPS database may retain tracks longer than that history. Recorder GPS import does not recreate missing Analytics energy history. As with all recorded states, values reflect the available sensor updates at the GPS boundaries; asynchronous or delayed vehicle reports can limit their temporal precision.
+
+### Map legend, scale and playback
+
+- **Show legend** enables a collapsible in-map legend. Its thresholds and colors are shared with the track renderer: SoC bands at 25/50/75%, speed bands at 30/60/100/130 km/h, or colors of the currently displayed vehicles. Missing SoC/speed data are gray rather than treated as zero.
+- **Show scale** adds a metric MapLibre scale in the lower-left corner. It follows the map zoom independently of tracking and is optional. Legend and scale preferences are saved in the browser.
+- Playback defaults to **Entire selection in 30 s**, with 1-minute/2-minute alternatives and fixed speeds up to **3000×**. A full 24-hour timeline therefore takes 30 seconds with the default setting; pause/resume preserves the current position. The hidden browser tab pauses playback.
+- **Skip gaps between trips** is enabled by default. When disabled, the marker waits at the preceding endpoint during the gap. It never animates a fictitious connection between separate trips. Interpolation within a trip is visual only; stored GPS points, statistics and GPX remain unchanged.
+- Camera modes are **Free map**, **Follow vehicle – north up**, and **Follow vehicle – heading up**. Following preserves zoom and pitch; heading changes use the shortest angular path and are rate-limited, while stationary observations retain the heading. Manually dragging the map or fitting the track switches to free-map mode. Selecting live vehicle focus stops historical playback so the two cameras cannot compete.
+
 ### Live recording and display updates
 
 Enabling **Record GPS tracking** samples the current valid position and then automatically processes changes to the configured latitude/longitude entities, even with the dashboard closed. No Recorder import is required for future recording. Position filters still apply; Cardata cannot record updates that the source integration does not supply.
 
-**Up to now (refresh automatically)** keeps the query end current and refreshes the open Tracking panel approximately every 15 seconds. Quick presets enable this mode. Editing the To field switches to a fixed historical range; old saved ranges stay fixed until you choose a preset or enable this option. Selecting one trip or playing back a track pauses automatic track replacement, and background refresh never refits the camera. The displayed recording status and stored counts can also be re-read with **Refresh stored counts**.
+**Up to now (refresh automatically)** keeps the query end current and refreshes the open Tracking panel approximately every 15 seconds. Quick presets enable this mode. Editing the To field switches to a fixed historical range; old saved ranges stay fixed until you choose a preset or enable this option. Selecting one trip or starting/seeking playback pauses automatic track replacement, including while playback is paused or finished. **Show full track** explicitly reloads the period and resets playback. Background refresh never refits the camera. The displayed recording status and stored counts can also be re-read with **Refresh stored counts**.
 
 The recorder uses conservative point acceptance rules: tiny GPS jitter is suppressed, points are not stored unnecessarily often, very large short-time jumps are rejected, and long gaps start a new segment instead of being connected. A low-frequency stationary heartbeat prevents loss of coverage information without turning the database into a second-by-second log. Long map queries are simplified for rendering while the accepted stored track remains available for GPX export.
 
