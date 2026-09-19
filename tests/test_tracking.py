@@ -56,6 +56,7 @@ module("homeassistant.components.recorder", history=history, get_instance=lambda
 module("homeassistant.config_entries", ConfigEntry=object)
 module("homeassistant.core", Event=object, EventStateChangedData=dict, HomeAssistant=object, callback=callback)
 module("homeassistant.helpers")
+module("homeassistant.helpers.entity_registry", async_get=lambda hass: hass.registry)
 module("homeassistant.helpers.event", async_track_state_change_event=track_state,
        async_track_time_change=lambda *args, **kwargs: lambda: None)
 module("homeassistant.helpers.dispatcher", async_dispatcher_send=lambda *args: None)

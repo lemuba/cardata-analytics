@@ -31,6 +31,7 @@ from .const import (
     CONF_VEHICLE_NAME,
     DOMAIN,
 )
+from .trip_analytics import async_trip_analytics
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ WS_QUERY = f"{DOMAIN}/tracking/query"
 WS_IMPORT = f"{DOMAIN}/tracking/import_recorder"
 WS_DELETE = f"{DOMAIN}/tracking/delete"
 WS_GPX = f"{DOMAIN}/tracking/gpx"
+WS_TRIP_DETAILS = f"{DOMAIN}/tracking/trip_details"
 
 
 def _valid_coordinate(value: Any, *, latitude: bool) -> float | None:
@@ -598,6 +600,8 @@ class TrackingManager:
                         "end": _iso_utc(segment[-1].ts),
                         "distance_km": round(dist_m / 1000.0, 3),
                         "point_count": len(segment),
+                        "start_soc": segment[0].soc if segment[0].soc is not None and 0 <= segment[0].soc <= 100 else None,
+                        "end_soc": segment[-1].soc if segment[-1].soc is not None and 0 <= segment[-1].soc <= 100 else None,
                         "duration_seconds": round(trip_duration),
                         "avg_speed_kmh": round(dist_m / trip_duration * 3.6, 2) if trip_duration > 0 else 0.0,
                         "max_speed_kmh": round(trip_max_speed, 2),
@@ -622,6 +626,21 @@ class TrackingManager:
                 }
             )
         return {"start": start.isoformat(), "end": end.isoformat(), "vehicles": vehicles}
+
+    async def async_trip_details(self, entry_id: str, start: datetime, end: datetime) -> dict[str, Any]:
+        """Read Analytics only on explicit trip selection, independently of GPS recording."""
+        entry = self._entries.get(entry_id)
+        if entry is None:
+            raise ValueError("Unknown vehicle")
+        points = await self.hass.async_add_executor_job(
+            self._points_db, entry_id, start.timestamp(), end.timestamp(), None
+        )
+        segments = self._split_segments(points)
+        if len(segments) != 1 or len(segments[0]) < 2:
+            raise ValueError("Select one stored trip")
+        if abs(points[0].ts - start.timestamp()) > 0.001 or abs(points[-1].ts - end.timestamp()) > 0.001:
+            raise ValueError("Trip bounds have changed; reload the track")
+        return await async_trip_analytics(self.hass, entry, start, end)
 
     def _nearest_series(self, states: list[Any]) -> tuple[list[float], list[float]]:
         pairs: list[tuple[float, float]] = []
@@ -1000,3 +1019,27 @@ def async_register_websocket(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_import)
     websocket_api.async_register_command(hass, websocket_delete)
     websocket_api.async_register_command(hass, websocket_gpx)
+    websocket_api.async_register_command(hass, websocket_trip_details)
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): WS_TRIP_DETAILS, vol.Required("entry_id"): str,
+     vol.Required("start"): str, vol.Required("end"): str}
+)
+@websocket_api.async_response
+async def websocket_trip_details(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
+    manager = get_tracking_manager(hass)
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Tracking is not ready")
+        return
+    try:
+        start, end = _validate_range(msg["start"], msg["end"])
+        result = await manager.async_trip_details(msg["entry_id"], start, end)
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid_trip", str(err))
+        return
+    except Exception:
+        _LOGGER.exception("Could not read existing Analytics history for a GPS trip")
+        connection.send_error(msg["id"], "history_unavailable", "Analytics history is unavailable")
+        return
+    connection.send_result(msg["id"], result)
