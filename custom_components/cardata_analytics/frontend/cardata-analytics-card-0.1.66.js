@@ -1,6 +1,6 @@
 const DOMAIN = "cardata_analytics";
 const CARD_TAG = "cardata-analytics-card";
-const CARD_VERSION = "0.1.65";
+const CARD_VERSION = "0.1.66";
 const ROUTE_MAX_WAYPOINTS = 9;
 const ROUTE_MOBILE_GOOGLE_WAYPOINTS = 3;
 const GPS_MOTION_MIN_SEGMENT_SECONDS = 2;
@@ -147,6 +147,23 @@ const CARDATA_EN = Object.freeze({
   "Pause": "Pause",
   "Abspielen": "Play",
   "Recorder-Import abgeschlossen: {count} neue Punkte.": "Recorder import complete: {count} new points.",
+  "Bis jetzt (automatisch aktualisieren)": "Up to now (refresh automatically)",
+  "Gespeichert insgesamt: {count} GPS-Punkte": "Stored in total: {count} GPS points",
+  "Live: {live} · Recorder-Import: {imported}": "Live: {live} · Recorder import: {imported}",
+  "Letzter GPS-Punkt: {date}": "Latest GPS point: {date}",
+  "Letzter Live-Punkt: {date}": "Latest live point: {date}",
+  "Noch keine GPS-Punkte gespeichert.": "No GPS points stored yet.",
+  "Noch keine Live-Punkte gespeichert.": "No live points stored yet.",
+  "Bestand aktualisieren": "Refresh stored counts",
+  "Gesamttrack liest gespeicherte Daten; Recorder-Import ergänzt ältere GPS-Daten.": "Full track reads stored data; Recorder import adds past GPS data.",
+  "Recorder-Import für {vehicle}": "Recorder import for {vehicle}",
+  "{inserted} neu gespeichert · {existing} bereits vorhanden · {filtered} herausgefiltert.": "{inserted} newly stored · {existing} already present · {filtered} filtered out.",
+  "Datenbank geprüft: {total} GPS-Punkte im Importzeitraum, davon {imported} aus Recorder-Importen.": "Database checked: {total} GPS points in the import period, including {imported} from Recorder imports.",
+  "Keine verwertbaren GPS-Punkte im Recorder-Zeitraum gefunden.": "No usable GPS points found in the Recorder period.",
+  "Ausgewählte Fahrt": "Selected trip",
+  "Geladener Zeitraum": "Loaded period",
+  "Nur diese Fahrt auf der Karte anzeigen": "Show only this trip on the map",
+  "Gesamttrack anzeigen hebt die Fahrtauswahl auf.": "Show full track clears the trip selection.",
   "Keine Tracking-Daten im gewählten Zeitraum.": "No tracking data in the selected time range.",
   "Tracking ist für dieses Fahrzeug deaktiviert.": "Tracking is disabled for this vehicle.",
   "Keine GPS-Konfiguration für dieses Fahrzeug.": "No GPS configuration for this vehicle.",
@@ -1742,7 +1759,13 @@ class CardataAnalyticsMapCard extends HTMLElement {
     this._trackingColorMode = "vehicle";
     this._trackingStartLocal = "";
     this._trackingEndLocal = "";
+    this._trackingFollowNow = false;
+    this._trackingRangePreset = "custom";
     this._trackingResult = null;
+    this._trackingSelectedTrip = null;
+    this._trackingQueryVersion = 0;
+    this._trackingRefreshTimer = null;
+    this._trackingRefreshing = false;
     this._trackingLoading = false;
     this._trackingMessage = "";
     this._trackingPlaybackTimer = null;
@@ -1887,11 +1910,15 @@ class CardataAnalyticsMapCard extends HTMLElement {
   connectedCallback() {
     this._restorePreferences();
     this._ensureRegistrySubscriptions();
+    this._startTrackingRefresh();
     queueMicrotask(() => this._restorePseudoFullscreen());
   }
 
   disconnectedCallback() {
     this._stopRegistrySubscriptions();
+    if (this._trackingRefreshTimer) clearInterval(this._trackingRefreshTimer);
+    this._trackingRefreshTimer = null;
+    this._trackingQueryVersion += 1;
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
       this._resizeObserver = null;
@@ -4175,6 +4202,9 @@ class CardataAnalyticsMapCard extends HTMLElement {
       if (["vehicle", "speed", "soc"].includes(data.trackingColorMode)) this._trackingColorMode = data.trackingColorMode;
       if (typeof data.trackingStartLocal === "string") this._trackingStartLocal = data.trackingStartLocal;
       if (typeof data.trackingEndLocal === "string") this._trackingEndLocal = data.trackingEndLocal;
+      // Old saved ranges remain fixed until a preset or Follow now is chosen.
+      this._trackingFollowNow = data.trackingFollowNow === true;
+      this._trackingRangePreset = ["today", "24h", "7d", "month"].includes(data.trackingRangePreset) ? data.trackingRangePreset : "custom";
       if (Number.isFinite(data.zoom)) this._zoom = Math.max(2, Math.min(22, Number(data.zoom)));
       if (data.center && Number.isFinite(data.center.lat) && Number.isFinite(data.center.lon)) {
         this._center = { lat: Number(data.center.lat), lon: Number(data.center.lon) };
@@ -4225,6 +4255,8 @@ class CardataAnalyticsMapCard extends HTMLElement {
         trackingColorMode: this._trackingColorMode,
         trackingStartLocal: this._trackingStartLocal,
         trackingEndLocal: this._trackingEndLocal,
+        trackingFollowNow: this._trackingFollowNow,
+        trackingRangePreset: this._trackingRangePreset,
         zoom: this._zoom,
         center: this._center,
         hiddenVehicles: [...this._hiddenVehicles],
@@ -4448,7 +4480,11 @@ class CardataAnalyticsMapCard extends HTMLElement {
       panel?.classList.toggle("hidden");
       if (panel && !panel.classList.contains("hidden")) {
         this._ensureTrackingRange();
-        this._loadTrackingStatus(true);
+        this._loadTrackingStatus(true).then(() => {
+          if (this.isConnected && this._trackingFollowNow && !this._trackingSelectedTrip) {
+            this._loadTrackingTrack({ background: Boolean(this._trackingResult) });
+          }
+        });
         this._renderTrackingPanel();
       }
       this._updateControls();
@@ -4496,17 +4532,25 @@ class CardataAnalyticsMapCard extends HTMLElement {
   }
 
   _ensureTrackingRange() {
-    if (this._trackingStartLocal && this._trackingEndLocal) return;
+    if (!this._trackingStartLocal || !this._trackingEndLocal) {
+      this._trackingRangePreset = "24h";
+      this._trackingFollowNow = true;
+    } else if (!this._trackingFollowNow) return;
     const end = new Date();
-    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
-    this._trackingStartLocal = this._toLocalDatetimeValue(start);
+    let start = null;
+    if (this._trackingRangePreset === "today") start = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+    else if (this._trackingRangePreset === "24h") start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+    else if (this._trackingRangePreset === "7d") start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
+    else if (this._trackingRangePreset === "month") start = new Date(end.getFullYear(), end.getMonth(), 1);
+    if (start) this._trackingStartLocal = this._toLocalDatetimeValue(start);
     this._trackingEndLocal = this._toLocalDatetimeValue(end);
   }
 
   _trackingRangeIso() {
     this._ensureTrackingRange();
     const start = new Date(this._trackingStartLocal);
-    const end = new Date(this._trackingEndLocal);
+    // Follow now includes the current seconds, not just the displayed minute.
+    const end = this._trackingFollowNow ? new Date() : new Date(this._trackingEndLocal);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
       throw new Error(this._t("Ungültiger Zeitraum: Das Von-Datum liegt nach dem Bis-Datum."));
     }
@@ -4514,19 +4558,56 @@ class CardataAnalyticsMapCard extends HTMLElement {
   }
 
   _setTrackingPreset(kind) {
-    const end = new Date();
-    let start = new Date(end);
-    if (kind === "today") start = new Date(end.getFullYear(), end.getMonth(), end.getDate(), 0, 0, 0, 0);
-    else if (kind === "24h") start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
-    else if (kind === "7d") start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
-    else if (kind === "month") start = new Date(end.getFullYear(), end.getMonth(), 1, 0, 0, 0, 0);
-    this._trackingStartLocal = this._toLocalDatetimeValue(start);
-    this._trackingEndLocal = this._toLocalDatetimeValue(end);
+    this._trackingRangePreset = kind;
+    this._trackingFollowNow = true;
+    this._ensureTrackingRange();
+    this._clearTrackingResult();
     this._savePreferences();
     this._renderTrackingPanel();
+    this._loadTrackingTrack();
   }
 
-  async _loadTrackingStatus(force = false) {
+  _clearTrackingResult() {
+    this._trackingQueryVersion += 1;
+    this._trackingSelectedTrip = null;
+    this._trackingResult = null;
+    this._stopTrackingPlayback(false);
+    this._trackingPlaybackFlat = [];
+    this._trackingPlaybackPoint = null;
+    this._trackingPlaybackIndex = 0;
+    this._trackingPopupMaplibre?.remove();
+    this._trackingPopupMaplibre = null;
+    this._syncTrackingMapSource();
+  }
+
+  _trackingPanelEditing() {
+    const panel = this.shadowRoot?.getElementById("tracking-panel");
+    const active = this.shadowRoot?.activeElement;
+    return Boolean(panel?.contains(active) && (active?.tagName === "SELECT" || ["datetime-local", "range"].includes(active?.type)));
+  }
+
+  _startTrackingRefresh() {
+    if (this._trackingRefreshTimer) return;
+    this._trackingRefreshTimer = setInterval(() => this._refreshTracking(), 15000);
+  }
+
+  async _refreshTracking() {
+    const panel = this.shadowRoot?.getElementById("tracking-panel");
+    if (!this.isConnected || document.hidden || !panel || panel.classList.contains("hidden") ||
+        this._trackingRefreshing || this._trackingLoading || this._trackingPlaybackRunning || this._trackingPanelEditing()) return;
+    this._trackingRefreshing = true;
+    try {
+      await this._loadTrackingStatus(true, true);
+      // A chosen historical trip stays frozen while inspected or played back.
+      if (this._trackingFollowNow && !this._trackingSelectedTrip && !this._trackingPanelEditing()) {
+        await this._loadTrackingTrack({ background: true });
+      }
+    } finally {
+      this._trackingRefreshing = false;
+    }
+  }
+
+  async _loadTrackingStatus(force = false, quiet = false) {
     if (!this._hass?.callWS || this._trackingStatusLoading || (this._trackingStatus && !force)) return;
     this._trackingStatusLoading = true;
     try {
@@ -4539,13 +4620,12 @@ class CardataAnalyticsMapCard extends HTMLElement {
       }
       if (!this._trackingSelectedEntries.size && this._trackingPrimaryEntryId) this._trackingSelectedEntries.add(this._trackingPrimaryEntryId);
       this._savePreferences();
-      this._trackingMessage = "";
     } catch (err) {
       console.warn("[Cardata Analytics] tracking status failed", err);
       this._trackingMessage = this._t("Tracking-Einstellungen konnten nicht geladen werden.");
     } finally {
       this._trackingStatusLoading = false;
-      this._renderTrackingPanel();
+      if (!quiet || !this._trackingPanelEditing()) this._renderTrackingPanel();
     }
   }
 
@@ -4589,35 +4669,42 @@ class CardataAnalyticsMapCard extends HTMLElement {
     }
   }
 
-  async _loadTrackingTrack() {
+  async _loadTrackingTrack({ background = false } = {}) {
     if (!this._hass?.callWS || this._trackingLoading) return;
     const ids = [...this._trackingSelectedEntries];
     if (!ids.length && this._trackingPrimaryEntryId) ids.push(this._trackingPrimaryEntryId);
     if (!ids.length) return;
+    if (background && (this._trackingSelectedTrip || this._trackingPlaybackRunning)) return;
+    const queryVersion = this._trackingQueryVersion;
     this._trackingLoading = true;
-    this._trackingMessage = "";
-    this._stopTrackingPlayback();
-    this._renderTrackingPanel();
+    if (!background) {
+      this._trackingSelectedTrip = null;
+      this._trackingMessage = "";
+      this._stopTrackingPlayback(false);
+      this._renderTrackingPanel();
+    }
     try {
       const range = this._trackingRangeIso();
-      this._trackingResult = await this._hass.callWS({
+      const result = await this._hass.callWS({
         type: "cardata_analytics/tracking/query",
         entry_ids: ids,
         start: range.start,
         end: range.end,
         max_points: 16000,
       });
+      if (queryVersion !== this._trackingQueryVersion || !this.isConnected || (background && this._trackingPlaybackRunning)) return;
+      this._trackingResult = result;
       const total = (this._trackingResult?.vehicles || []).reduce((sum, v) => sum + Number(v.point_count || 0), 0);
       if (!total) this._trackingMessage = this._t("Keine Tracking-Daten im gewählten Zeitraum.");
-      this._syncTrackingMapSource();
-      this._fitTrackingTracks();
+      else if (this._trackingMessage === this._t("Keine Tracking-Daten im gewählten Zeitraum.")) this._trackingMessage = "";
       this._prepareTrackingPlayback();
+      if (!background) this._fitTrackingTracks();
     } catch (err) {
       console.warn("[Cardata Analytics] tracking query failed", err);
       this._trackingMessage = this._t("Track konnte nicht geladen werden.") + ` ${err?.message || err}`;
     } finally {
       this._trackingLoading = false;
-      this._renderTrackingPanel();
+      if (!background || !this._trackingPanelEditing()) this._renderTrackingPanel();
     }
   }
 
@@ -4634,7 +4721,17 @@ class CardataAnalyticsMapCard extends HTMLElement {
         start: range.start,
         end: range.end,
       });
-      const importedMessage = this._t("Recorder-Import abgeschlossen: {count} neue Punkte.", { count: Number(result?.inserted || 0) });
+      const importedMessage = [
+        this._t("Recorder-Import für {vehicle}", { vehicle: result?.vehicle_name || this._trackingPrimaryEntryId }),
+        `${this._formatTrackingDateTime(range.start)} → ${this._formatTrackingDateTime(range.end)}`,
+        this._t("{inserted} neu gespeichert · {existing} bereits vorhanden · {filtered} herausgefiltert.", {
+          inserted: Number(result?.inserted || 0), existing: Number(result?.already_stored || 0), filtered: Number(result?.filtered || 0),
+        }),
+        result?.stored ? this._t("Datenbank geprüft: {total} GPS-Punkte im Importzeitraum, davon {imported} aus Recorder-Importen.", {
+          total: Number(result.stored.point_count || 0), imported: Number(result.stored.imported_point_count || 0),
+        }) : "",
+        !result?.candidates ? this._t("Keine verwertbaren GPS-Punkte im Recorder-Zeitraum gefunden.") : "",
+      ].filter(Boolean).join("\n");
       await this._loadTrackingStatus(true);
       // Allow the normal track query to run after the import. Keeping the
       // import's loading flag set here would make _loadTrackingTrack() return
@@ -4653,14 +4750,17 @@ class CardataAnalyticsMapCard extends HTMLElement {
   async _downloadTrackingGpx(tripIndex = null) {
     if (!this._hass?.callWS || !this._trackingPrimaryEntryId) return;
     try {
-      const range = this._trackingRangeIso();
+      const selectedIndex = Number.isInteger(tripIndex) ? tripIndex : this._trackingSelectedTrip?.index;
+      const trip = this._trackingVehicleResult()?.trips?.find((item) => item.index === selectedIndex);
+      // Export the loaded selection, even if the live window has advanced.
+      // Exact trip bounds avoid index drift after another client imports data.
+      const range = trip || this._trackingResult || this._trackingRangeIso();
       const request = {
         type: "cardata_analytics/tracking/gpx",
         entry_id: this._trackingPrimaryEntryId,
         start: range.start,
         end: range.end,
       };
-      if (Number.isInteger(tripIndex) && tripIndex >= 0) request.trip_index = tripIndex;
       const result = await this._hass.callWS(request);
       const blob = new Blob([String(result?.content || "")], { type: "application/gpx+xml;charset=utf-8" });
       const url = URL.createObjectURL(blob);
@@ -4687,12 +4787,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
       const range = this._trackingRangeIso();
       const result = await this._hass.callWS({ type: "cardata_analytics/tracking/delete", entry_ids: ids, start: range.start, end: range.end });
       this._trackingMessage = `${Number(result?.deleted || 0)} ${this._t("GPS-Punkte")}`;
-      this._stopTrackingPlayback(false);
-      this._trackingResult = null;
-      this._trackingPlaybackFlat = [];
-      this._trackingPlaybackIndex = 0;
-      this._trackingPlaybackPoint = null;
-      this._syncTrackingMapSource();
+      this._clearTrackingResult();
       await this._loadTrackingStatus(true);
     } catch (err) {
       this._trackingMessage = String(err?.message || err);
@@ -4706,12 +4801,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     try {
       const result = await this._hass.callWS({ type: "cardata_analytics/tracking/delete", entry_ids: [this._trackingPrimaryEntryId] });
       this._trackingMessage = `${Number(result?.deleted || 0)} ${this._t("GPS-Punkte")}`;
-      this._stopTrackingPlayback(false);
-      this._trackingResult = null;
-      this._trackingPlaybackFlat = [];
-      this._trackingPlaybackIndex = 0;
-      this._trackingPlaybackPoint = null;
-      this._syncTrackingMapSource();
+      this._clearTrackingResult();
       await this._loadTrackingStatus(true);
     } catch (err) {
       this._trackingMessage = String(err?.message || err);
@@ -4723,8 +4813,36 @@ class CardataAnalyticsMapCard extends HTMLElement {
     return (this._trackingResult?.vehicles || []).find((v) => String(v.entry_id) === String(entryId)) || null;
   }
 
+  _trackingVisibleVehicles() {
+    const selected = this._trackingSelectedTrip;
+    if (selected) {
+      const vehicle = this._trackingVehicleResult(selected.entryId);
+      const trip = vehicle?.trips?.find((item) => item.index === selected.index);
+      const segment = vehicle?.segments?.[selected.index];
+      if (!trip || !segment || segment.length < 2) return [];
+      return [{ ...vehicle, ...trip, trip_count: 1, segments: [segment] }];
+    }
+    // Isolated observations remain stored/exportable but are not driving tracks.
+    return (this._trackingResult?.vehicles || []).map((vehicle) => ({
+      ...vehicle, segments: (vehicle.segments || []).filter((segment) => segment.length >= 2),
+    }));
+  }
+
+  _selectTrackingTrip(entryId, index) {
+    const vehicle = this._trackingVehicleResult(entryId);
+    if (!vehicle?.trips?.some((trip) => trip.index === index && trip.point_count >= 2)) return;
+    this._trackingQueryVersion += 1;
+    this._trackingSelectedTrip = { entryId, index };
+    this._stopTrackingPlayback(false);
+    this._trackingPopupMaplibre?.remove();
+    this._trackingPopupMaplibre = null;
+    this._prepareTrackingPlayback();
+    this._fitTrackingTracks();
+    this._renderTrackingPanel();
+  }
+
   _prepareTrackingPlayback() {
-    const vehicle = this._trackingVehicleResult();
+    const vehicle = this._trackingVisibleVehicles().find((v) => String(v.entry_id) === String(this._trackingPrimaryEntryId));
     this._trackingPlaybackFlat = [];
     for (const segment of vehicle?.segments || []) {
       for (const point of segment || []) this._trackingPlaybackFlat.push(point);
@@ -4797,17 +4915,22 @@ class CardataAnalyticsMapCard extends HTMLElement {
   _renderTrackingPanel() {
     const panel = this.shadowRoot?.getElementById("tracking-panel");
     if (!panel) return;
+    const scrollTop = panel.scrollTop;
+    const tripScrollTop = panel.querySelector(".tracking-trip-list")?.scrollTop || 0;
+    const focusedId = this.shadowRoot.activeElement?.id;
     this._ensureTrackingRange();
     const vehicles = this._trackingStatus?.vehicles || [];
     const gpsVehicles = vehicles.filter((v) => v.gps_configured);
     const primary = gpsVehicles.find((v) => v.entry_id === this._trackingPrimaryEntryId) || gpsVehicles[0];
     if (primary && !this._trackingPrimaryEntryId) this._trackingPrimaryEntryId = primary.entry_id;
-    const resultVehicles = this._trackingResult?.vehicles || [];
+    const resultVehicles = this._trackingVisibleVehicles();
     const totalPoints = resultVehicles.reduce((sum, v) => sum + Number(v.point_count || 0), 0);
     const totalDistance = resultVehicles.reduce((sum, v) => sum + Number(v.distance_km || 0), 0);
     const totalTrips = resultVehicles.reduce((sum, v) => sum + Number(v.trip_count || 0), 0);
     const totalDuration = resultVehicles.reduce((sum, v) => sum + Number(v.duration_seconds || 0), 0);
     const primaryResult = this._trackingVehicleResult();
+    const primaryVisible = resultVehicles.find((v) => String(v.entry_id) === String(this._trackingPrimaryEntryId));
+    const trips = (primaryResult?.trips || []).filter((trip) => trip.point_count >= 2);
     panel.innerHTML = `
       <div class="panel-title"><span>${this._esc(this._t("GPS-Historie"))}</span><button id="tracking-close" aria-label="${this._esc(this._t("Schließen"))}"><ha-icon icon="mdi:close"></ha-icon></button></div>
       ${this._trackingStatusLoading && !vehicles.length ? `<div class="tracking-message">${this._esc(this._t("Cardata Analytics wird geladen …"))}</div>` : ""}
@@ -4817,57 +4940,68 @@ class CardataAnalyticsMapCard extends HTMLElement {
         <label class="tracking-field"><span>${this._esc(this._t("Primärfahrzeug"))}</span><select id="tracking-primary">${gpsVehicles.map((v) => `<option value="${this._esc(v.entry_id)}" ${v.entry_id === this._trackingPrimaryEntryId ? "selected" : ""}>${this._esc(v.name)}</option>`).join("")}</select></label>
         <label class="tracking-field"><span>${this._esc(this._t("Darstellung"))}</span><select id="tracking-color"><option value="vehicle" ${this._trackingColorMode === "vehicle" ? "selected" : ""}>${this._esc(this._t("Fahrzeugfarbe"))}</option><option value="speed" ${this._trackingColorMode === "speed" ? "selected" : ""}>${this._esc(this._t("Geschwindigkeit"))}</option><option value="soc" ${this._trackingColorMode === "soc" ? "selected" : ""}>SoC</option></select></label>
       </div>
+      <label class="tracking-live"><input id="tracking-follow-now" type="checkbox" ${this._trackingFollowNow ? "checked" : ""}> ${this._esc(this._t("Bis jetzt (automatisch aktualisieren)"))}</label>
       <div class="tracking-quick"><button data-track-preset="today">${this._esc(this._t("Heute"))}</button><button data-track-preset="24h">${this._esc(this._t("Letzte 24h"))}</button><button data-track-preset="7d">${this._esc(this._t("Letzte 7 Tage"))}</button><button data-track-preset="month">${this._esc(this._t("Dieser Monat"))}</button></div>
       <div class="tracking-vehicles">${gpsVehicles.length ? gpsVehicles.map((v) => {
         const selected = this._trackingSelectedEntries.has(String(v.entry_id));
-        const status = v.point_count ? `${Number(v.point_count).toLocaleString(this._locale())} ${this._t("GPS-Punkte")}` : this._t("Keine Tracking-Daten im gewählten Zeitraum.");
-        return `<div class="tracking-vehicle"><input type="checkbox" data-track-show="${this._esc(v.entry_id)}" ${selected ? "checked" : ""}><div><strong>${this._esc(v.name)}</strong><small>${this._esc(status)}</small><label><input type="checkbox" data-track-enable="${this._esc(v.entry_id)}" ${v.enabled ? "checked" : ""}> ${this._esc(this._t("GPS-Tracking aufzeichnen"))}</label></div><select data-track-retention="${this._esc(v.entry_id)}"><option value="30" ${v.retention_days === 30 ? "selected" : ""}>30 ${this._t("Tage")}</option><option value="90" ${v.retention_days === 90 ? "selected" : ""}>90 ${this._t("Tage")}</option><option value="180" ${v.retention_days === 180 ? "selected" : ""}>180 ${this._t("Tage")}</option><option value="365" ${v.retention_days === 365 ? "selected" : ""}>365 ${this._t("Tage")}</option><option value="0" ${v.retention_days === 0 ? "selected" : ""}>${this._t("Unbegrenzt")}</option></select></div>`;
+        const status = this._t("Gespeichert insgesamt: {count} GPS-Punkte", { count: Number(v.point_count || 0).toLocaleString(this._locale()) });
+        const sources = this._t("Live: {live} · Recorder-Import: {imported}", { live: Number(v.live_point_count || 0).toLocaleString(this._locale()), imported: Number(v.imported_point_count || 0).toLocaleString(this._locale()) });
+        const lastPoint = v.last_ts ? this._t("Letzter GPS-Punkt: {date}", { date: this._formatTrackingDateTime(v.last_ts) }) : this._t("Noch keine GPS-Punkte gespeichert.");
+        const lastLive = v.last_live_ts ? this._t("Letzter Live-Punkt: {date}", { date: this._formatTrackingDateTime(v.last_live_ts) }) : this._t("Noch keine Live-Punkte gespeichert.");
+        return `<div class="tracking-vehicle"><input type="checkbox" data-track-show="${this._esc(v.entry_id)}" aria-label="${this._esc(v.name)}" ${selected ? "checked" : ""}><div><strong>${this._esc(v.name)}</strong><small>${this._esc(status)}</small><small>${this._esc(sources)}</small><small>${this._esc(lastPoint)}</small><small>${this._esc(lastLive)}</small><label><input type="checkbox" data-track-enable="${this._esc(v.entry_id)}" ${v.enabled ? "checked" : ""}> ${this._esc(this._t("GPS-Tracking aufzeichnen"))}</label></div><select data-track-retention="${this._esc(v.entry_id)}" aria-label="${this._esc(this._t("Aufbewahrung"))}"><option value="30" ${v.retention_days === 30 ? "selected" : ""}>30 ${this._t("Tage")}</option><option value="90" ${v.retention_days === 90 ? "selected" : ""}>90 ${this._t("Tage")}</option><option value="180" ${v.retention_days === 180 ? "selected" : ""}>180 ${this._t("Tage")}</option><option value="365" ${v.retention_days === 365 ? "selected" : ""}>365 ${this._t("Tage")}</option><option value="0" ${v.retention_days === 0 ? "selected" : ""}>${this._t("Unbegrenzt")}</option></select></div>`;
       }).join("") : `<div class="tracking-message">${this._esc(this._t("Keine Fahrzeuge mit GPS-Konfiguration gefunden."))}</div>`}</div>
+      <button class="tracking-refresh" id="tracking-refresh" ${this._trackingStatusLoading ? "disabled" : ""}>${this._esc(this._t("Bestand aktualisieren"))}</button>
+      <div class="tracking-hint">${this._esc(this._t("Gesamttrack liest gespeicherte Daten; Recorder-Import ergänzt ältere GPS-Daten."))}</div>
       <div class="tracking-actions"><button id="tracking-show" ${this._trackingLoading ? "disabled" : ""}><ha-icon icon="mdi:map-marker-path"></ha-icon> ${this._esc(this._t("Gesamttrack anzeigen"))}</button><button id="tracking-fit"><ha-icon icon="mdi:fit-to-screen-outline"></ha-icon> ${this._esc(this._t("Track einpassen"))}</button><button id="tracking-import" ${!this._trackingPrimaryEntryId || this._trackingLoading ? "disabled" : ""}>${this._esc(this._t("Recorder importieren"))}</button><button id="tracking-gpx" ${!primaryResult?.point_count ? "disabled" : ""}>GPX</button><button id="tracking-delete" ${!totalPoints ? "disabled" : ""} title="${this._esc(this._t("Tracking-Daten löschen"))}"><ha-icon icon="mdi:delete-outline"></ha-icon></button><button id="tracking-delete-all" ${!primary?.point_count ? "disabled" : ""} title="${this._esc(this._t("Alle Tracking-Daten löschen"))}"><ha-icon icon="mdi:delete-forever-outline"></ha-icon></button></div>
       ${this._trackingMessage ? `<div class="tracking-message">${this._esc(this._trackingMessage)}</div>` : ""}
-      ${totalPoints ? `<div class="tracking-summary"><div>${this._esc(this._t("Distanz"))}<b>${this._formatNumber(totalDistance, 1)} km</b></div><div>${this._esc(this._t("Fahrten"))}<b>${totalTrips}</b></div><div>${this._esc(this._t("GPS-Punkte"))}<b>${totalPoints.toLocaleString(this._locale())}</b></div><div>${this._esc(this._t("Fahrtzeit"))}<b>${this._esc(this._formatTrackingDuration(totalDuration))}</b></div><div>${this._esc(this._t("Ø GPS"))}<b>${this._formatNumber(primaryResult?.avg_speed_kmh || 0, 1)} km/h</b></div><div>${this._esc(this._t("Max GPS"))}<b>${this._formatNumber(primaryResult?.max_speed_kmh || 0, 1)} km/h</b></div></div>` : ""}
-      ${primaryResult?.trips?.length ? `<div><strong>${this._esc(this._t("Fahrten"))}</strong><div class="tracking-trip-list">${primaryResult.trips.map((trip) => `<div class="tracking-trip-row"><button class="tracking-trip" data-track-trip="${trip.index}">${this._esc(this._formatTrackingDateTime(trip.start))} → ${this._esc(new Intl.DateTimeFormat(this._locale(), { timeStyle: "short" }).format(new Date(trip.end)))} · ${this._formatNumber(trip.distance_km, 1)} km · ${trip.point_count} ${this._esc(this._t("GPS-Punkte"))}</button><button class="tracking-trip-gpx" data-track-trip-gpx="${trip.index}" title="GPX">GPX</button></div>`).join("")}</div></div>` : ""}
+      ${totalPoints ? `<div class="tracking-scope"><strong>${this._esc(this._t(this._trackingSelectedTrip ? "Ausgewählte Fahrt" : "Geladener Zeitraum"))}</strong>${this._trackingSelectedTrip ? `<small>${this._esc(this._t("Gesamttrack anzeigen hebt die Fahrtauswahl auf."))}</small>` : ""}</div><div class="tracking-summary"><div>${this._esc(this._t("Distanz"))}<b>${this._formatNumber(totalDistance, 1)} km</b></div><div>${this._esc(this._t("Fahrten"))}<b>${totalTrips}</b></div><div>${this._esc(this._t("GPS-Punkte"))}<b>${totalPoints.toLocaleString(this._locale())}</b></div><div>${this._esc(this._t("Fahrtzeit"))}<b>${this._esc(this._formatTrackingDuration(totalDuration))}</b></div><div>${this._esc(this._t("Ø GPS"))}<b>${this._formatNumber(primaryVisible?.avg_speed_kmh || 0, 1)} km/h</b></div><div>${this._esc(this._t("Max GPS"))}<b>${this._formatNumber(primaryVisible?.max_speed_kmh || 0, 1)} km/h</b></div></div>` : ""}
+      ${trips.length ? `<div><strong>${this._esc(this._t("Fahrten"))}</strong><div class="tracking-trip-list">${trips.map((trip) => `<div class="tracking-trip-row"><button class="tracking-trip" data-track-trip="${trip.index}" aria-pressed="${this._trackingSelectedTrip?.entryId === this._trackingPrimaryEntryId && this._trackingSelectedTrip?.index === trip.index}" title="${this._esc(this._t("Nur diese Fahrt auf der Karte anzeigen"))}">${this._esc(this._formatTrackingDateTime(trip.start))} → ${this._esc(new Intl.DateTimeFormat(this._locale(), { timeStyle: "short" }).format(new Date(trip.end)))} · ${this._formatNumber(trip.distance_km, 1)} km · ${trip.point_count} ${this._esc(this._t("GPS-Punkte"))}</button><button class="tracking-trip-gpx" data-track-trip-gpx="${trip.index}" title="GPX">GPX</button></div>`).join("")}</div></div>` : ""}
       ${this._trackingPlaybackFlat.length ? `<div class="tracking-playback"><strong>${this._esc(this._t("Playback"))}</strong><div class="tracking-playback-row"><button id="tracking-play">${this._trackingPlaybackRunning ? this._esc(this._t("Pause")) : this._esc(this._t("Abspielen"))}</button><input id="tracking-play-slider" type="range" min="0" max="${Math.max(0, this._trackingPlaybackFlat.length - 1)}" value="${this._trackingPlaybackIndex}"><select id="tracking-play-speed">${[1,5,10,30,60,120].map((s) => `<option value="${s}" ${Number(this._trackingPlaybackSpeed) === s ? "selected" : ""}>${s}×</option>`).join("")}</select></div><div class="tracking-message" id="tracking-play-time">${this._esc(this._trackingPlaybackPoint?.ts ? this._formatTrackingDateTime(this._trackingPlaybackPoint.ts) : "–")}</div></div>` : ""}`;
 
     panel.querySelector("#tracking-close")?.addEventListener("click", () => { panel.classList.add("hidden"); this._updateControls(); });
-    panel.querySelector("#tracking-start")?.addEventListener("input", (e) => { this._trackingStartLocal = e.target.value; this._savePreferences(); });
-    panel.querySelector("#tracking-end")?.addEventListener("input", (e) => { this._trackingEndLocal = e.target.value; this._savePreferences(); });
-    panel.querySelector("#tracking-primary")?.addEventListener("change", (e) => { this._trackingPrimaryEntryId = e.target.value; this._trackingSelectedEntries.add(e.target.value); this._savePreferences(); this._prepareTrackingPlayback(); this._renderTrackingPanel(); });
+    panel.querySelector("#tracking-start")?.addEventListener("change", (e) => { this._trackingStartLocal = e.target.value; this._trackingRangePreset = "custom"; this._clearTrackingResult(); this._savePreferences(); this._renderTrackingPanel(); });
+    panel.querySelector("#tracking-end")?.addEventListener("change", (e) => { this._trackingEndLocal = e.target.value; this._trackingFollowNow = false; this._trackingRangePreset = "custom"; this._clearTrackingResult(); this._savePreferences(); this._renderTrackingPanel(); });
+    panel.querySelector("#tracking-follow-now")?.addEventListener("change", (e) => { this._trackingFollowNow = e.target.checked; this._clearTrackingResult(); this._ensureTrackingRange(); this._savePreferences(); this._renderTrackingPanel(); this._loadTrackingTrack(); });
+    panel.querySelector("#tracking-primary")?.addEventListener("change", (e) => { this._trackingPrimaryEntryId = e.target.value; this._trackingSelectedEntries.add(e.target.value); this._trackingQueryVersion += 1; this._trackingSelectedTrip = null; this._stopTrackingPlayback(false); this._savePreferences(); this._prepareTrackingPlayback(); this._renderTrackingPanel(); });
     panel.querySelector("#tracking-color")?.addEventListener("change", (e) => { this._trackingColorMode = e.target.value; this._savePreferences(); this._syncTrackingMapSource(); });
     panel.querySelectorAll("[data-track-preset]").forEach((b) => b.addEventListener("click", () => this._setTrackingPreset(b.dataset.trackPreset)));
-    panel.querySelectorAll("[data-track-show]").forEach((el) => el.addEventListener("change", () => { const id = el.dataset.trackShow; if (el.checked) this._trackingSelectedEntries.add(id); else this._trackingSelectedEntries.delete(id); this._savePreferences(); }));
+    panel.querySelectorAll("[data-track-show]").forEach((el) => el.addEventListener("change", () => { const id = el.dataset.trackShow; if (el.checked) this._trackingSelectedEntries.add(id); else this._trackingSelectedEntries.delete(id); this._clearTrackingResult(); this._savePreferences(); this._renderTrackingPanel(); }));
     panel.querySelectorAll("[data-track-enable]").forEach((el) => el.addEventListener("change", () => { const id = el.dataset.trackEnable; const retention = Number(panel.querySelector(`[data-track-retention="${CSS.escape(id)}"]`)?.value || 365); this._setTrackingVehicleSettings(id, el.checked, retention); }));
     panel.querySelectorAll("[data-track-retention]").forEach((el) => el.addEventListener("change", () => { const id = el.dataset.trackRetention; const enabled = Boolean(panel.querySelector(`[data-track-enable="${CSS.escape(id)}"]`)?.checked); this._setTrackingVehicleSettings(id, enabled, Number(el.value)); }));
     panel.querySelector("#tracking-show")?.addEventListener("click", () => this._loadTrackingTrack());
+    panel.querySelector("#tracking-refresh")?.addEventListener("click", () => this._loadTrackingStatus(true));
     panel.querySelector("#tracking-fit")?.addEventListener("click", () => this._fitTrackingTracks());
     panel.querySelector("#tracking-import")?.addEventListener("click", () => this._importTrackingRecorder());
     panel.querySelector("#tracking-gpx")?.addEventListener("click", () => this._downloadTrackingGpx());
     panel.querySelector("#tracking-delete")?.addEventListener("click", () => this._deleteTrackingRange());
     panel.querySelector("#tracking-delete-all")?.addEventListener("click", () => this._deleteAllTrackingForPrimary());
-    panel.querySelectorAll("[data-track-trip]").forEach((b) => b.addEventListener("click", () => this._fitTrackingTrip(this._trackingPrimaryEntryId, Number(b.dataset.trackTrip))));
+    panel.querySelectorAll("[data-track-trip]").forEach((b) => b.addEventListener("click", () => this._selectTrackingTrip(this._trackingPrimaryEntryId, Number(b.dataset.trackTrip))));
     panel.querySelectorAll("[data-track-trip-gpx]").forEach((b) => b.addEventListener("click", () => this._downloadTrackingGpx(Number(b.dataset.trackTripGpx))));
     panel.querySelector("#tracking-play")?.addEventListener("click", () => this._trackingPlaybackRunning ? this._stopTrackingPlayback() : this._startTrackingPlayback());
     panel.querySelector("#tracking-play-slider")?.addEventListener("input", (e) => { this._stopTrackingPlayback(false); this._setTrackingPlaybackIndex(Number(e.target.value)); });
     panel.querySelector("#tracking-play-speed")?.addEventListener("change", (e) => { this._trackingPlaybackSpeed = Number(e.target.value); if (this._trackingPlaybackRunning) { this._stopTrackingPlayback(false); this._startTrackingPlayback(); } });
+    panel.scrollTop = scrollTop;
+    const tripList = panel.querySelector(".tracking-trip-list");
+    if (tripList) tripList.scrollTop = tripScrollTop;
+    if (["tracking-start", "tracking-end"].includes(focusedId)) panel.querySelector(`#${focusedId}`)?.focus({ preventScroll: true });
   }
 
   _fitTrackingTracks() {
     const coords = [];
-    for (const vehicle of this._trackingResult?.vehicles || []) {
+    for (const vehicle of this._trackingVisibleVehicles()) {
       for (const segment of vehicle.segments || []) for (const p of segment || []) coords.push([Number(p.lon), Number(p.lat)]);
     }
     this._fitTrackingCoordinates(coords);
   }
 
-  _fitTrackingTrip(entryId, tripIndex) {
-    const vehicle = this._trackingVehicleResult(entryId);
-    const segment = vehicle?.segments?.[tripIndex] || [];
-    this._fitTrackingCoordinates(segment.map((p) => [Number(p.lon), Number(p.lat)]));
-  }
-
   _fitTrackingCoordinates(coords) {
     const clean = coords.filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
     if (!clean.length || !this._vectorMap || !this._mapStyleReady) return;
+    if (this._mode === "gps") {
+      this._mode = this._lastFreeMode || "osm";
+      this._savePreferences();
+      this._updateControls();
+    }
     const lons = clean.map((p) => p[0]), lats = clean.map((p) => p[1]);
     try {
       this._vectorMap.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 55, maxZoom: 16, duration: 420 });
@@ -4882,7 +5016,7 @@ class CardataAnalyticsMapCard extends HTMLElement {
     if (!lineSource || !markerSource) return;
     const lines = [];
     const markers = [];
-    for (const vehicle of this._trackingResult?.vehicles || []) {
+    for (const vehicle of this._trackingVisibleVehicles()) {
       const entryId = String(vehicle.entry_id || "");
       for (const segment of vehicle.segments || []) {
         for (let i = 1; i < segment.length; i += 1) {
@@ -7481,9 +7615,14 @@ class CardataAnalyticsMapCard extends HTMLElement {
       .tracking-summary b { display:block; margin-top:2px; color:var(--primary-text-color); font-size:12px; }
       .tracking-trip-list { display:flex; flex-direction:column; gap:4px; max-height:180px; overflow:auto; margin-top:7px; }
       .tracking-trip { width:100%; text-align:left; padding:6px 8px; border:1px solid var(--divider-color); border-radius:8px; background:var(--secondary-background-color); color:var(--primary-text-color); font:inherit; font-size:9px; cursor:pointer; }
+      .tracking-trip[aria-pressed="true"] { border-color:var(--primary-color); background:color-mix(in srgb,var(--primary-color) 15%,var(--card-background-color)); box-shadow:inset 3px 0 0 var(--primary-color); font-weight:700; }
+      .tracking-live { display:flex; align-items:center; gap:5px; margin-top:7px; font-size:10px; }
+      .tracking-refresh { min-height:30px; padding:4px 8px; border:1px solid var(--divider-color); border-radius:8px; background:var(--secondary-background-color); color:var(--primary-text-color); font:inherit; font-size:10px; cursor:pointer; }
+      .tracking-hint,.tracking-scope small { display:block; margin:6px 0; color:var(--secondary-text-color); font-size:10px; line-height:1.4; }
+      .tracking-scope { margin-top:10px; font-size:11px; }
       .tracking-trip-row { display:grid; grid-template-columns:minmax(0,1fr) 46px; gap:4px; }
       .tracking-trip-gpx { min-height:32px; border:1px solid var(--divider-color); border-radius:8px; background:var(--secondary-background-color); color:var(--primary-text-color); font:inherit; font-size:9px; font-weight:700; cursor:pointer; }
-      .tracking-message { margin:6px 0; padding:6px 8px; border-radius:8px; background:var(--secondary-background-color); color:var(--secondary-text-color); font-size:9px; line-height:1.35; }
+      .tracking-message { margin:6px 0; padding:6px 8px; border-radius:8px; background:var(--secondary-background-color); color:var(--secondary-text-color); font-size:9px; line-height:1.35; white-space:pre-line; overflow-wrap:anywhere; }
       .tracking-playback { margin-top:8px; padding-top:8px; border-top:1px solid var(--divider-color); }
       .tracking-playback-row { display:flex; align-items:center; gap:5px; }
       .tracking-playback input[type=range] { flex:1; min-width:0; }

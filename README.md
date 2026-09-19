@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.65  
+> **Current release:** v0.1.66  
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.65; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.66; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.65.js?v=0.1.65
+  - url: /cardata_analytics/cardata-analytics-card-0.1.66.js?v=0.1.66
     type: module
 ```
 
@@ -439,6 +439,18 @@ Tracking features include:
 - optional import of still-available GPS history from Home Assistant Recorder
 - deletion of Cardata tracking points for the selected vehicle(s) and selected time range
 
+### Select one trip or the full period
+
+Click a trip in the list to show **only that trip's historical track**. The row is highlighted; start/end markers, the summary, playback and the main GPX button follow this selection. Live vehicle markers, POIs and planned routes remain separate map layers. **Show full track** clears the trip selection and reloads the selected vehicles for the complete From/To period. **Fit track** fits whichever historical track is currently shown.
+
+Single GPS observations remain in the database and in full-period GPX exports, but are not shown as trips, driving tracks or playback stops. The trip list and trip counter both require at least two points. Trip separation still uses the existing GPS-gap/plausibility rules; a short stop does not necessarily separate an outward journey from its return.
+
+### Live recording and display updates
+
+Enabling **Record GPS tracking** samples the current valid position and then automatically processes changes to the configured latitude/longitude entities, even with the dashboard closed. No Recorder import is required for future recording. Position filters still apply; Cardata cannot record updates that the source integration does not supply.
+
+**Up to now (refresh automatically)** keeps the query end current and refreshes the open Tracking panel approximately every 15 seconds. Quick presets enable this mode. Editing the To field switches to a fixed historical range; old saved ranges stay fixed until you choose a preset or enable this option. Selecting one trip or playing back a track pauses automatic track replacement, and background refresh never refits the camera. The displayed recording status and stored counts can also be re-read with **Refresh stored counts**.
+
 The recorder uses conservative point acceptance rules: tiny GPS jitter is suppressed, points are not stored unnecessarily often, very large short-time jumps are rejected, and long gaps start a new segment instead of being connected. A low-frequency stationary heartbeat prevents loss of coverage information without turning the database into a second-by-second log. Long map queries are simplified for rendering while the accepted stored track remains available for GPX export.
 
 ### GPX export
@@ -448,6 +460,16 @@ GPX files contain standard latitude, longitude and UTC timestamps, plus elevatio
 ### Recorder import
 
 The **Recorder import** action can seed Cardata's track database with GPS history that Home Assistant Recorder still retains for the configured latitude/longitude entities. Import is always user-triggered, limited to the selected time range and deduplicated, so importing the same range again does not create duplicate points.
+
+The completion report distinguishes **newly stored**, **already present** and **filtered-out** candidate points. After committing the import, Cardata reads the database again and reports the point count in that import period, including the number originally stored through Recorder import. A zero-new result can mean all accepted points already exist; a separate message identifies a period with no usable Recorder points.
+
+To check persistence later:
+
+1. Reopen Tracking or click **Refresh stored counts**. Each vehicle shows its stored total, separate live/import counts, latest GPS timestamp and latest live timestamp. These figures cover all retained data for that vehicle, not just the selected From/To period. Timestamps describe GPS observations, not the time the import button was clicked.
+2. Choose the same historical period and click **Show full track** without importing again. Tracks are now read exclusively from Cardata's database.
+3. The same check works after a Home Assistant restart. Imported points remain independent of Recorder history until Cardata retention or an explicit deletion removes them.
+
+Source counts identify how each stored point was first inserted. Importing a point that already exists as a live point does not change its source or count it twice. Import supplies points; trips are derived from those stored points when a period is queried.
 
 ### Tracking privacy
 
