@@ -1,0 +1,661 @@
+# Changelog
+
+## 0.1.67
+
+- Added selected-trip Start/End SoC from stored GPS points and consumption from existing Analytics energy/odometer history. New read-only trip details reuse current counters, with no new energy recording or changes to Daily Ledger, SoC filtering or repair.
+- Explicitly distinguish missing history, gaps, counter resets/corrections and repaired SoC days. Daily totals are never allocated speculatively to individual trips; average consumption uses the recorded odometer distance, which is displayed separately from GPS distance.
+- Added persistent newest/oldest-first trip sorting without changing selection, track chronology or GPX export.
+- Added an optional collapsible map legend using the exact track color bands, including a gray no-data category, and an optional zoom-aware metric map scale.
+- Replaced stepped playback with frame-based visual interpolation. Added 30-second/1-minute/2-minute duration presets and fixed speeds through 3000×; the default plays a 24-hour selection in 30 seconds.
+- Added a pause-gap toggle, fractional-position pause/resume and seeking, hidden-tab pause and frame cleanup. Static track geometry is not rebuilt on each animation frame.
+- Added free-map, north-up follow and heading-up follow camera modes. Heading transitions are smoothed through the shortest turn, stay stable when stationary, and preserve zoom/pitch. Manual panning or track fitting releases the camera; live vehicle focus stops playback.
+- Preserved the v0.1.66 live-recording, selected-trip, singleton filtering and import verification fixes. Updated DE/EN UI, documentation, version references and the physical frontend resource to `cardata-analytics-card-0.1.67.js?v=0.1.67`.
+
+## 0.1.66
+
+- Fixed live GPS recording: the registered Home Assistant state-change listener is now explicitly marked as an event-loop callback, so GPS updates can safely schedule recording.
+- Isolated GPS recording failures are logged without interrupting core analytics.
+- Clicking a trip now selects only that historical track, including its start/end markers, summary, playback and GPX export. The selected row is highlighted; Show full track restores the full selected period.
+- Single-point observations remain stored and available in full-period GPX, but are excluded from the trip list, historical track display and playback. Original segment indices are preserved for API compatibility.
+- Added an explicit Up to now option and periodic refresh of the visible Tracking panel. Fixed historical ranges are preserved; refresh does not move the camera or replace a selected trip or running playback.
+- Added committed database totals split by live recording and Recorder import, latest point timestamps, and a manual stored-count refresh.
+- Recorder import now reports newly stored, already-present and filtered candidate points, followed by a fresh database read for the imported period. Exact trip bounds are used for frontend GPX export to avoid exporting a different trip after the stored segment list changes.
+- Added German/English interface text and documentation explaining recording, importing, persistence and trip selection.
+- Analytics, Daily Ledger, SoC repair, vehicle entity identifiers and GPS acceptance thresholds are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.66.js?v=0.1.66`.
+
+## 0.1.65
+
+- Added the new **GPS Track History & Explorer** as a subsystem isolated from Analytics, Daily Ledger, SoC repair, POI and routing calculations.
+- Added opt-in GPS recording per vehicle with local SQLite persistence and configurable 30/90/180/365-day or unlimited retention.
+- Added conservative live track-point filtering for small jitter, excessive short-time jumps, minimum sample interval and long-gap segmentation.
+- Added freely selectable From/To date and time ranges plus Today, Last 24h, Last 7 days and This month presets.
+- Added complete historical track rendering for arbitrary selected time ranges without drawing artificial lines across GPS gaps.
+- Added multi-vehicle historical track display with the existing deterministic Cardata vehicle colours.
+- Added automatic trip/segment summaries, total GPS distance, movement duration, average GPS speed and maximum GPS speed.
+- Added selectable track colouring by vehicle, speed or recorded SoC.
+- Added start/end markers, trip focus and historical playback for the selected primary vehicle.
+- Added GPX 1.1 export with separate `<trkseg>` sections and optional Cardata SoC/speed/odometer extensions.
+- Added user-triggered import of retained Home Assistant Recorder latitude/longitude history, including timestamp pairing, plausibility filtering and duplicate protection.
+- Added deletion of Cardata tracking data for selected vehicles and the selected time range.
+- Tracking is disabled by default and stores data locally; it never writes into Home Assistant Recorder and never changes Analytics/Daily Ledger values.
+- Updated README documentation and frontend resource/cache-busting filename to `cardata-analytics-card-0.1.65.js?v=0.1.65`.
+
+## 0.1.64
+
+- Broadened historical SoC spike detection to recognize short **directional zig-zags** while the vehicle keeps moving, including patterns such as `67% → 100% → 54%`. The return no longer has to land close to the exact pre-spike value.
+- Repeated short spikes in the same driving period are detected independently instead of the first spike masking the next one.
+- Increased the hard short-spike observation window to 30 minutes while retaining conservative odometer/stability checks outside that window.
+- The live guard uses the same directional return principle for large upward source glitches, so a false high value cannot become the next consumption baseline merely because the real SoC continued falling while driving.
+- Historical repair is now **idempotent per day**. Cardata persists the cumulative phantom-energy correction already applied for each date and only offers newly detected, not-yet-applied energy on later analyses.
+- Added a v0.1.63 compatibility bridge: the last v0.1.63 repair result is recognized as already applied after upgrading, preventing the same correction from being subtracted again.
+- Repair previews distinguish days whose detected spike energy has already been corrected from days with an additional correction still available.
+- Existing Map/3D/OSM/OSM+/Topo/Satellite, POI 2.0 and routing behavior remain unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.64.js?v=0.1.64`.
+
+## 0.1.63
+
+- Added conservative live SoC spike protection so a short-lived high SoC excursion can no longer become a false consumption baseline when the source immediately returns to its previous level.
+- Added a per-vehicle **SoC data check** for the currently selected Analytics range. It reads the configured source SoC/odometer history from Home Assistant Recorder and creates a non-destructive repair preview.
+- Historical repair detects short-lived upward or downward SoC excursions that return near the pre-spike value. Very short round trips are treated as intrinsically implausible; longer candidates additionally require the odometer to remain effectively stationary.
+- Repair previews show the affected days, detected spike count, current Cardata energy, proposed energy and the exact kWh reduction before anything is written.
+- Applying a preview corrects only the phantom energy attributable to detected spikes, updates the affected Daily Ledger entries plus currently active Day/Week/Month/Year counters and adjusts the lifetime Cardata energy by the same delta.
+- A pre-apply backup of affected Analytics counters/ledger entries is retained in Cardata storage for diagnostics. Raw manufacturer SoC history in Home Assistant Recorder is never modified.
+- Existing Map/3D/POI/routing behavior is unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.63.js?v=0.1.63`.
+
+
+## 0.1.62
+
+- Added a hide/show toggle for the on-map 3D control panel so the terrain controls no longer consume permanent space on small smartphone screens.
+- When hidden, a compact floating **3D** button remains available on the map and reopens the full terrain control panel with one tap.
+- The 3D control visibility state is persisted in the existing browser-local map preferences, independently from compass visibility.
+- Existing 3D features from v0.1.61 remain unchanged: rotation/bearing control, drag rotation, touch rotation, compass toggle, north reset, DEM elevation readout and hillshaded terrain.
+- OSM, OSM+, Topo, Satellite, DEM/hillshade, POIs, routing, Analytics, Daily Ledger and vehicle calculations remain unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.62.js?v=0.1.62`.
+
+## 0.1.60
+
+- 3D terrain now adds a MapLibre hillshade layer from the existing AWS Terrarium DEM so ridges, valleys and slopes remain visually readable on top of the OpenFreeMap surface.
+- Increased the Cardata terrain DEM source cap from zoom 12 to zoom 14 for finer mountain geometry while retaining the existing `cardata-dem://` loader and IndexedDB cache.
+- Added a live DEM-elevation readout for the current map centre so the UI can confirm that actual terrain data are active, independently of 3D building extrusions.
+- Existing pitch (0–75°) and terrain-exaggeration (1.0–3.0×) controls are unchanged and continue to persist with map preferences.
+- OSM, OSM+, Topo, Satellite, GPS Follow, POIs, routing, Analytics, Daily Ledger and vehicle calculations remain unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.60.js?v=0.1.60`.
+
+## 0.1.59
+
+- Reworked the 3D terrain DEM path to use a dedicated `cardata-dem://` MapLibre protocol with controlled CORS fetching, matching the robust request pattern proven in the supplied Bosch eBike 3D implementation.
+- Successfully fetched AWS Terrarium DEM tiles are cached in browser-local IndexedDB when available; private/hardened browser modes fall back to uncached network fetching instead of disabling terrain.
+- Added an on-map 3D control for adjustable camera pitch from 0° to 75° and terrain exaggeration from 1.0× to 3.0×. Defaults remain 50° / 1.5× and can be restored with one reset button.
+- 3D pitch and terrain exaggeration are persisted in the existing map-card browser preferences and remain active when GPS Follow reuses the 3D map mode.
+- Raised MapLibre's terrain-view pitch ceiling to 80° while leaving 2D modes north-up and flat.
+- OSM, OSM+, Topo, Satellite, vehicle overlays, POIs, routing, Analytics, Daily Ledger and vehicle calculations are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.59.js?v=0.1.59`.
+
+## 0.1.58
+
+- Added a dedicated **3D terrain** map mode while keeping MapLibre as the single map engine.
+- 3D uses the existing OpenFreeMap Liberty vector surface plus public AWS Terrarium raster-DEM elevation tiles; no additional API key is required.
+- The 3D camera uses a fixed 50° pitch and moderate 1.5× terrain exaggeration, and returns to north-up 2D when another base-map mode is selected.
+- Vehicle markers, remaining-range rings, POIs, clustering, route markers and route planning stay on the existing Cardata MapLibre layers in 3D.
+- GPS Follow can continue in 3D when 3D was the last selected free map mode.
+- Existing OSM, OSM+, Topo and Satellite providers are unchanged. Analytics, Daily Ledger, POI queries, routing data and vehicle calculations are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.58.js?v=0.1.58`.
+
+## 0.1.57
+
+- Replaced the OSM+ use of the public `tile.openstreetmap.org` raster service with the API-key-free **OpenFreeMap Bright** vector style.
+- Removed the v0.1.56 `transformRequest` / referrer-policy workaround because it did not prevent OSM 403 tiles in all Home Assistant/iPad WebView environments.
+- Normal **OSM** remains OpenFreeMap Liberty; **OSM+** now provides the denser Bright rendering while staying fully inside the existing MapLibre architecture.
+- Topo, Satellite, GPS Follow, vehicle markers, range rings, POIs, clustering and routing overlays are unchanged.
+- Updated README documentation and external-service notes to reflect the new OSM+ provider.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.57.js?v=0.1.57`.
+
+## 0.1.56
+
+- Fixed **OSM+** requests being rejected with OpenStreetMap 403 `Access blocked` tiles in Home Assistant/browser environments with restrictive referrer handling.
+- Added a narrowly scoped MapLibre `transformRequest` rule that applies `referrerPolicy: "origin"` only to `https://tile.openstreetmap.org/` requests.
+- OpenFreeMap Liberty, OpenTopoMap, Esri Satellite and all other MapLibre/network requests keep their existing default request behaviour.
+- No fallback provider or second map engine was added; OSM+ remains the classic OpenStreetMap Standard raster map inside the existing MapLibre architecture.
+- Analytics, Daily Ledger, POI search, routing, GPS Follow/Motion and vehicle calculations are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.56.js?v=0.1.56`.
+
+## 0.1.55
+
+- Added a new **OSM+** detailed base-map mode using the classic OpenStreetMap Standard raster tiles (`tile.openstreetmap.org`), matching the denser road/place-name rendering requested for the vehicle map.
+- Kept the existing OpenFreeMap Liberty vector style unchanged as the normal **OSM** mode, so no working map style is removed.
+- OSM+ runs inside the existing MapLibre map as a raster style; vehicle markers, remaining-range rings, POIs, clustering, GPS follow and routing overlays continue to use the same MapLibre data layers.
+- OSM+ supports zoom levels up to 19 and displays OpenStreetMap attribution.
+- Added OSM+ to persisted map-mode preferences and GPS follow's last-free-map mode.
+- Updated the narrow responsive map-style control from four to five slots so OSM+, Topo, Satellite and GPS remain directly reachable on small cards.
+- Analytics, Daily Ledger, POI search, route planning and vehicle calculations are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.55.js?v=0.1.55`.
+
+## 0.1.54
+
+- Routing start point is no longer limited to a GPS-capable vehicle.
+- Added start from current smartphone/browser geolocation, with explicit permission request, accuracy information and location age.
+- Added saved global Cardata destinations and Home Assistant zones as route starts.
+- Address-search results can now be used as start, waypoint or destination.
+- Free map points can now be selected as route start.
+- Route templates persist the start type while remaining compatible with older vehicle-only templates; smartphone templates refresh the device position when loaded.
+- Route map markers and Fit now include the selected start point.
+- Fixed route address input losing text/focus/cursor during vehicle movement or other Home Assistant state updates.
+- Updated the Nominatim User-Agent to the current release.
+- Existing Analytics, Daily Ledger, POI, vehicle calculations and 9/3/9 waypoint behavior remain unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.54.js?v=0.1.54`.
+
+## 0.1.53
+
+- Fixed wide-radius general POI refreshes (for example Restaurants & Fast Food at 100 km) being reported as a misleading empty result when all Overpass endpoints timed out.
+- Existing POIs now remain visible when a general POI refresh fails.
+- Changing the radius while a general text search is active performs a targeted Overpass search for that text; typing itself remains purely local.
+- Increased the time available to the preferred healthy Overpass endpoint within the configured total request budget while retaining endpoint fallbacks.
+
+## 0.1.52
+
+- Fixed general POI free-text searches losing nearby matches when a larger radius produced more results than `poi_max_results`.
+- General Overpass requests now keep a larger bounded candidate pool (up to 3000 items), sort candidates by distance in Cardata, and only render up to the configured `poi_max_results`.
+- Typing in the general POI search remains fully local and does not create Overpass traffic.
+- Pressing **Refresh** with a general search term now performs one targeted Overpass text query and merges those matches into the current local candidate pool without replacing the broad cache.
+- Added a clear DE/EN status notice when the broad candidate pool is saturated and local text search may be incomplete.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.52.js?v=0.1.52`.
+
+## 0.1.51
+
+- Documentation/screenshots release based on the unchanged v0.1.50 runtime feature set.
+- Replaced the GitHub README with a current-state guide only: detailed HACS/manual installation, integration/vehicle setup, Analytics card, MapLibre vehicle map, POI 2.0, Open Charge Map/API-key setup, routing, persistence, localization, responsive/mobile behaviour, privacy and current limitations. Historical README material and obsolete legacy references are removed.
+- Added six repository-local screenshots under `docs/images/` covering the integration overview, vehicle setup/reconfigure flow, Analytics dashboard, vehicle map, POI management and route planning.
+- README explicitly notes that the screenshots are desktop captures while both custom cards are responsive and designed for smartphone/tablet use, including iPhone/iOS safe-area handling.
+- Runtime logic, Analytics, Daily Ledger, vehicle calculations, POI/routing behaviour and entity identities are unchanged from v0.1.50.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.51.js?v=0.1.51`.
+
+## 0.1.50
+
+- Added complete first-step German/English localization across both custom cards: Analytics, vehicle/map controls, POI categories/filters/status, route planning, prompts, errors, tooltips and mobile/fullscreen UI.
+- Card language now follows the Home Assistant language. German uses the existing source wording; English uses a dedicated translation dictionary. Other Home Assistant languages currently fall back to English.
+- Number and date formatting in both cards now follows the active Home Assistant/browser locale instead of being hard-coded to `de-DE`.
+- Added Home Assistant entity-name translations for all Cardata sensors and the global comparison-period date/select controls while preserving existing unique IDs and suggested entity IDs. The preset select's legacy German raw option values intentionally remain unchanged for automation/service compatibility; both Cardata custom cards render those presets in the active UI language.
+- The integration-managed global comparison entry is normalized from the former German-only title `Cardata Analytics Vergleichszeitraum` to the language-neutral `Cardata Analytics`; its config-entry identity and stored data are unchanged.
+- POI category/group labels, route messages, GPS motion status/directions, vehicle popup text, map attribution labels and fallback charging-station display names are localized.
+- Config-flow German/English translations remain key-for-key aligned and were revalidated together with the new entity translation sections.
+- Analytics, Daily Ledger and all vehicle/range/consumption calculations are unchanged. `controller.py` and `const.py` remain byte-identical to 0.1.49; `sensor.py`, `date.py` and `select.py` only receive localization metadata/name changes.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.50.js?v=0.1.50`.
+
+## 0.1.49
+
+- Fixed narrow map cards on desktop/mobile: map-mode controls and action controls now use a responsive two-row layout instead of hiding right-side buttons in a scrollbar-free horizontal overflow area.
+- Added frontend-only per-vehicle GPS motion calculation from two synchronized latitude/longitude updates. The value is an average between GPS samples and does not affect Analytics, consumption or range calculations.
+- Added safeguards for GPS jitter (<12 m => stationary), very short/old sample intervals, and implausible jumps (>320 km/h). Motion becomes stale after 10 minutes without a usable update.
+- Added GPS average speed and movement status/direction to the vehicle popup and vehicle panel. Remaining-range labels show the current GPS average speed as a second line when available.
+- Latitude/longitude timestamps are now part of the map-card state signature so stationary GPS refreshes can update motion status without causing POI network requests.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.49.js?v=0.1.49`.
+
+## 0.1.48
+
+- Route planning now supports up to 9 intermediate stops internally in Cardata, including map display, browser state and global route templates.
+- Google Maps handoff is device-aware: a conservative maximum of 3 intermediate stops is exported on mobile/iPhone/iPad-style devices, while desktop handoff can export up to 9.
+- From the 4th intermediate stop onward, the route panel shows a persistent compatibility notice so no waypoint is silently lost inside Cardata.
+- Address results, POIs and free map points all use the same 9-stop internal limit.
+- Existing v0.1.47 iPhone safe-area, fullscreen and mobile POI scrolling fixes are retained.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.48.js?v=0.1.48`.
+
+## 0.1.47
+
+- Mobile/iPhone fullscreen now respects safe-area insets and reserves a minimum top safety margin on narrow screens, keeping the fullscreen-exit control reachable around notches/Dynamic Island and Home Assistant webview chrome.
+- The mobile POI bottom sheet now uses one vertical touch-scroll surface for the complete panel. The nested category scroller is disabled on narrow screens so charging filters, radius/actions and the end of the POI menu remain reachable.
+- Address-search results can now be inserted directly as an intermediate stop in addition to being used as the final destination or saved globally.
+- Free MapLibre map points can now be chosen either as the next intermediate stop or as the final destination. The compact map-pick mode supports both actions while existing POI routing continues to work unchanged.
+- The existing maximum of three ordered intermediate stops is intentionally unchanged, including route templates, local persistence, map markers and Google Maps handoff.
+- Analytics, Daily Ledger, vehicle/range calculations and the protected files `controller.py`, `sensor.py`, `date.py`, `select.py` and `const.py` are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.47.js?v=0.1.47`.
+
+## 0.1.46
+
+- Hotfix for vehicle-centered POIs disappearing during driving/route planning: GPS movement no longer clears the last successful POI layer merely because the rounded vehicle-center key changed by a few metres.
+- POIs from the same selected vehicle remain visible while the configured movement threshold decides when a refresh is needed and also remain visible while that refresh is in flight; successful fresh results replace them atomically.
+- Switching the POI center to a different vehicle still suppresses the previous vehicle's POIs. Existing strict route-center identity behavior and map-center behavior are unchanged.
+- No additional POI/Overpass/OCM requests are introduced. The general POI search text remains local-only.
+- Analytics, Daily Ledger, vehicle/range calculations and the protected files `controller.py`, `sensor.py`, `date.py`, `select.py` and `const.py` are unchanged.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.46.js?v=0.1.46`.
+
+## 0.1.45
+
+- POI 2.0 removes all built-in standard POI templates from the map UI. The selector now contains only **Aktuelle Filter** and user-created global templates stored in Home Assistant. Existing custom templates remain compatible.
+- Charging searches can combine up to 12 operators/networks at once (for example IONITY + EnBW + Tesla). The selection uses OR semantics, is persisted locally, is stored in global POI templates and is forwarded to Open Charge Map using stable operator IDs when all selected names can be resolved.
+- Charging-station markers now use deterministic operator/network colors with stable two-character labels such as **IO**, **EN** and **TS**. Generic operators receive a deterministic hash-based color and abbreviation, identical across devices.
+- POI radii now include **500 km** and **1000 km**. Open Charge Map can use the full selected radius; general OSM/Overpass categories keep the previous maximum of 200 km to prevent accidental continent-scale Overpass queries. Mixed searches therefore use the large radius for charging and a protected 200-km radius for general POIs.
+- Large charging result sets use more aggressive MapLibre clustering and keep charging labels inside the geographic marker layer. The existing configurable POI result cap remains authoritative, including for 500/1000-km searches.
+- POI center is now selectable between the current vehicle, the current route destination and the current map center. The selected center mode can be stored in global POI templates. Route-centered POIs refresh when the route destination changes.
+- The general POI search text remains a purely local client-side filter and is intentionally excluded from network/cache request keys, so typing or changing it does **not** trigger a new Overpass request.
+- Analytics, Daily Ledger, date/select/controller logic and existing vehicle/range calculations are unchanged. The protected files `controller.py`, `sensor.py`, `date.py`, `select.py` and `const.py` are byte-identical to 0.1.44.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.45.js?v=0.1.45`.
+
+## 0.1.44
+
+- GPS **Follow** is now continuous: every vehicle GPS update recenters the active MapLibre camera on the followed vehicle while preserving the user's current zoom level. Mouse-wheel/pinch/+/- zoom keeps Follow active; deliberate user panning exits Follow.
+- Added global route templates stored in Home Assistant. The current route can be saved, loaded and deleted across desktop, iPhone/iPad and Companion App; route templates keep the selected start vehicle but always use its current live GPS coordinates.
+- Added global named destinations stored in Home Assistant. Current/map/POI/address destinations can be saved under arbitrary names such as HOME or Arbeit, renamed and deleted.
+- Home Assistant `zone.*` entities are exposed directly as selectable route destinations without duplicating their coordinates into Cardata storage.
+- Added explicit address search to the route panel through the Home Assistant backend. User-submitted searches are rate-limited/cached and use Nominatim; search results can be used immediately as a route destination or stored globally under a custom name.
+- Existing Google Maps handoff, three-waypoint limit, POI routing, map-picked destination and range hints remain unchanged.
+- No Analytics, Daily Ledger, OCM, POI-provider or vehicle/range calculation logic was changed.
+
+## 0.1.43
+
+- Hotfix route map picking after a MapLibre/full-card rebuild: detach and clear the route click handler together with the destroyed map instance so the replacement map always binds a fresh handler.
+- Free map clicks in **Ziel auf Karte** mode now set the destination again after Home Assistant/card structure re-renders, while POI layer clicks keep priority and continue to open POI popups instead of creating a free map target.
+- No Analytics, Daily Ledger, OCM, POI-provider, range, vehicle-color or Google Maps route-handoff logic was changed.
+
+## 0.1.42
+
+- Added optional route planning to `custom:cardata-analytics-map-card` with a live vehicle GPS position as route origin.
+- Added a dedicated responsive route panel with vehicle selection, up to three ordered intermediate stops, map-picked destination, route fit, clear/reset actions and mobile-friendly compact map-pick mode.
+- Every visible POI can now be added directly as a route intermediate stop or destination; charging stations therefore work as selectable charging stops without a new provider or API key.
+- Route points are rendered as numbered MapLibre markers only. Cardata deliberately does not draw a fake straight-line road route; Google Maps calculates the actual road route when opened.
+- Added Google Maps route handoff using origin, destination and ordered waypoints, plus an optional navigation action. Maximum intermediate stops are intentionally limited to three for reliable mobile/iPhone URL handoff.
+- Route state is stored locally with the existing map preferences; the route origin always uses the currently available GPS coordinates of the selected vehicle.
+- POI popups now show air-line distance plus whether the POI lies inside or outside the vehicle's current air-line range estimate.
+- Fixed the map `+` / `−` controls by driving the active MapLibre camera directly instead of relying on the legacy render-state synchronization path. Mouse-wheel and pinch zoom remain unchanged.
+- No Analytics, Daily Ledger, Open Charge Map, POI-provider or range-calculation backend logic was changed.
+
+## 0.1.41
+
+- Added deterministic, colorblind-friendly per-vehicle colors shared by vehicle pins, vehicle-panel indicators and range overlays.
+- Added optional per-vehicle live remaining-range overlays as geodesic MapLibre polygons, with matching border/fill colors and range labels.
+- Range overlays follow every GPS update and automatically shrink/grow when the vehicle range sensor changes.
+- Added toolbar controls to toggle all range overlays and fit all enabled range areas.
+- Added per-vehicle range toggles and `Alle + Reichweite` fit action in the vehicle panel.
+- Added a range toggle to vehicle popups.
+- Range overlay visibility is stored locally with the existing map preferences; color assignment is deterministic across devices.
+- No Analytics, Daily Ledger, date-range, Open Charge Map or POI-provider logic was changed.
+
+## 0.1.40
+
+- Hotfix: restore `custom:cardata-analytics-card` (the normal multi-vehicle analytics card).
+- Remove an accidental POI-template loader call that was inserted into the normal analytics card in 0.1.39; global POI templates remain active only in `custom:cardata-analytics-map-card`.
+- No Analytics, Ledger, period, GPS, OCM or POI-provider logic changes.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.40.js?v=0.1.40`.
+
+## 0.1.39
+
+- Reworked the POI panel into a compact three-zone layout: sticky vehicle/template/category-search controls at the top, a dedicated scrollable category accordion in the middle, and always-available general search/charging/radius/actions/status controls at the bottom.
+- Added a responsive mobile bottom-sheet layout for narrow/iPhone-sized dashboards with safe-area padding, 44 px touch targets, compact category chips and one-open-group-at-a-time accordion behavior.
+- Added an explicit POI vehicle selector plus crosshair focus action. Selecting a vehicle makes it the POI search center and focuses/zooms the shared MapLibre camera without enabling GPS follow.
+- Category groups now start collapsed and display selected/total counts; selected categories are shown as removable compact chips while all 57 POI categories remain available.
+- Custom POI templates are now stored globally in Home Assistant `.storage` through dedicated websocket commands, making saved templates available across browsers, iPhone/iPad and Companion App.
+- Added one-time migration of existing browser-local custom POI templates to the global backend store with conflict-safe imported names. Current UI/filter state remains local per device.
+- Existing MapLibre marker/follow/fullscreen behavior, Open Charge Map provider/cache logic, general POI query logic and analytics/ledger logic remain unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.39.js?v=0.1.39`.
+
+## 0.1.38
+
+- Fixed individual vehicle **Follow** / vehicle-focus after the MapLibre camera migration. Follow now drives the MapLibre camera directly with `easeTo()` instead of relying on the legacy center/zoom state synchronization path.
+- Added one shared vehicle-focus helper used by the popup **Folgen** button, the vehicle-panel crosshair button and the top-level GPS mode.
+- Added a short programmatic-camera guard so a MapLibre camera animation started by Follow cannot be mistaken for manual panning and immediately cancel GPS follow.
+- Clicking another vehicle while GPS follow is active now switches follow to that vehicle and recenters/zooms immediately.
+- `Alle` / fit-all behavior, MapLibre POI rendering, the 57-category POI catalogue/search, Open Charge Map integration and analytics/ledger logic remain unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.38.js?v=0.1.38`.
+
+## 0.1.37
+
+- General POI text search is now purely local on the already loaded category/radius cache. Saved presets such as `Restaurants + Donalds` therefore behave exactly like loading Restaurants first and typing `Donalds` afterwards, without creating a second Overpass request/cache namespace.
+- POI network/cache scope is now based on vehicle position, radius and selected categories; charging operator/connector remain server-scoped for efficient OCM queries, while text/minimum-power/unknown-power filters remain local.
+- Expanded the selectable POI catalogue to 57 travel-relevant categories across Auto & Mobility, Food & Drink, Shopping, Health, Travel, Roadside, Services, Public Transport, Leisure and Emergency.
+- Added collapsible category groups and a category-search field so the expanded POI catalogue remains usable on desktop, iPad and iPhone.
+- Existing MapLibre marker/cluster/fullscreen architecture and analytics/ledger logic remain unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.37.js?v=0.1.37`.
+
+## 0.1.36
+
+- Fixed **Fit all vehicles** after the MapLibre migration: the toolbar `Alle` action now uses MapLibre `fitBounds()` with panel-aware padding and reliably exits GPS follow before fitting.
+- Expanded the **Restaurants** category to OSM `amenity=fast_food` and `amenity=food_court`, so chains such as McDonald's and Burger King are included.
+- Improved general POI text search with punctuation/spacing normalization (for example `McDonalds`, `Mc Donalds`, and `McDonald's`) and broader OSM name/brand/cuisine matching.
+- Replaced browser-native fullscreen activation with Cardata's persistent CSS fullscreen mode. Opening Google Maps/Navigation in a new tab no longer collapses the dashboard map when returning; Escape still exits fullscreen.
+- Fullscreen intent is kept in `sessionStorage` so Home Assistant/WebView lifecycle recreation in the same tab restores the large map.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.36.js?v=0.1.36`.
+
+## 0.1.35
+
+- Unified all map rendering on **MapLibre**. OpenFreeMap/OSM, OpenTopoMap and Satellite now use the same camera/projection instead of mixing MapLibre with a separate hand-positioned raster/HTML overlay engine.
+- Vehicle positions are now geographic MapLibre markers. They stay attached to their latitude/longitude while panning, zooming, GPS-following and switching basemaps.
+- POIs are now a clustered MapLibre GeoJSON source. Cluster positions, individual POIs and their selection state move with the map camera instead of being recalculated as independent screen pixels.
+- Vehicle and POI popup placement now uses `Map.project()` from the same renderer, eliminating drift between popup anchors and map geometry while the map moves.
+- MapLibre now owns mouse/touch panning, wheel zoom and double-click zoom; the previous parallel custom drag calculations are no longer wired to the map.
+- Fixed charging filters leaking into normal POIs: the operator/network filter is applied only to charging stations, and the backend no longer sends a charging operator filter to general Overpass queries.
+- When **Ladestationen** is manually switched off, Cardata clears the previous charging search text, operator/network, connector, minimum-power and unknown-power settings before querying other POI categories.
+- Reorganized the POI panel so general text search and charging-specific operator/network filters are visually separated.
+- Open Charge Map integration, persistent OCM reference/area caches, 2–200 km radii, presets, Satellite/Topo/OSM/GPS modes and all Analytics/Daily Ledger/range logic remain intact.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.35.js?v=0.1.35`.
+
+## 0.1.34
+
+- Reworked the Open Charge Map client for lower payloads and fewer duplicate requests. Cardata now fetches OCM `/referencedata` once, stores a reduced persistent lookup cache, and decodes compact station responses locally.
+- OCM POI requests now use `compact=true&verbose=false&includecomments=false` whenever reference data is available, substantially reducing response size for 100–200 km searches.
+- Added persistent reference-data caching (7-day fresh TTL, up to 60-day stale fallback). If reference data is unavailable and no usable cache exists, charging searches automatically fall back to a normal non-compact OCM response instead of failing.
+- Added OCM area single-flight deduplication across multiple cards and rapid filter changes so identical live area requests share one network task.
+- Targeted operator/connector presets now resolve OCM reference IDs and send `operatorid` / `connectiontypeid` to OCM, reducing payloads and avoiding broad-result truncation for searches such as IONITY + CCS at 100–200 km. Broad cached areas can still satisfy narrower filters without a new request.
+- Fixed a cache write race where concurrent searches for different vehicles/areas could overwrite each other's persistent OCM area cache.
+- OCM station normalization now resolves compact `OperatorID`, `ConnectionTypeID`, `DataProviderID`, `UsageTypeID`, `StatusTypeID` and country IDs through the local reference cache while preserving operator names, CCS/Type 2/CHAdeMO/Tesla detection, power and source attribution.
+- Reconfigure/install key validation now uses the small OCM reference endpoint instead of an arbitrary POI query.
+- Updated the map footer to correctly identify Open Charge Map as the charging-station provider.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.34.js?v=0.1.34`.
+
+## 0.1.33
+
+- Replaced the Germany-only BNetzA/AFIR/QLever charging workflow with **Open Charge Map** as the Europe-wide charging-station provider.
+- Added Open Charge Map API-key fields to installation and Reconfigure. The key is validated server-side and never sent to Lovelace/browser code.
+- Synchronizes the one OCM credential across Cardata Analytics config entries so multi-vehicle setups do not need card-level configuration.
+- Added persistent per-area OCM caching under `.storage`: six-hour fresh cache plus up to seven-day stale fallback during provider outages.
+- Charging-only searches never call Overpass. General restaurants/fuel/pharmacy/etc. remain on the independent Overpass path.
+- Normalizes OCM operator/network, address, provider attribution, CCS/Type 2/CHAdeMO/Tesla connectors, power and capacity into the existing POI model.
+- Existing IONITY/Tesla/operator, connector, power and 2–200 km filters remain available without Lovelace edits.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.33.js?v=0.1.33`.
+
+## 0.1.30
+
+- Reworked EV charging POIs around persistent bulk data instead of per-search public query services. Charging searches now use the open **AFIR / Mobilithek Eco-Movement** DATEX-II publication as the primary source and the monthly **Bundesnetzagentur** charging-register CSV as an independent local fallback.
+- Added persistent compressed charging caches under Home Assistant `.storage`. Once a source has been downloaded, 2–200 km radius changes, IONITY/Tesla/operator searches, connector filters and power filters run locally without a new external request for every map interaction.
+- Added stale-while-revalidate behavior: an existing charging cache remains usable while a refresh happens in the background. A temporary external outage therefore no longer removes already known charging stations from the map.
+- Removed QLever and the token-dependent Bundesnetzagentur ArcGIS/API path from the critical charging workflow. OSM/Overpass is used for charging only as a bounded emergency fallback when neither local charging dataset is available.
+- Added DATEX-II AFIR normalization for station/operator, EVSE IDs, CCS/Type 2/CHAdeMO/Tesla connectors, connector power, station power, capacity, address and coordinates. IONITY is also recognized from `DE*IOY*...` EVSE identifiers.
+- Added Bundesnetzagentur CSV normalization for the same Cardata charging model, including repeated connector/power/EVSE columns and German decimal-comma values. The current CSV URL is discovered from the official BNetzA page; a dated URL is only a bootstrap fallback.
+- The large BNetzA CSV is refreshed in the background and does not block the first map query. AFIR is small enough to be awaited once on a fresh installation; after that both sources are local-cache-first.
+- General non-charging POIs continue to use the robust Overpass failover/state-machine path from 0.1.28/0.1.29.
+- Kept the existing latest-request-wins loader, watchdog/retry logic, 2–200 km radii, presets/filters, OpenFreeMap/Topo/Satellite/GPS modes and all Analytics/Daily Ledger/range logic unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.30.js?v=0.1.30`.
+
+## 0.1.29
+
+## 0.1.28
+
+- Reworked POI loading into an explicit latest-request-wins state machine. A running Home Assistant websocket request is no longer invalidated by repeated HA state updates, GPS refreshes or UI re-renders; only one newest follow-up query is kept when filters/radius/vehicle change mid-request.
+- Fixed the race that could leave the POI panel permanently on “POIs werden … geladen” after one or two successful refreshes.
+- Added a frontend watchdog so a lost/stalled websocket reply cannot keep the POI UI busy indefinitely.
+- Added up to two bounded automatic retries for transient Overpass/network/busy errors while preserving the previous POI markers during refresh.
+- Reworked the backend Overpass failover to use one total request deadline instead of giving every fallback server the full timeout; dead endpoints therefore cannot accumulate multi-minute stalls.
+- Added endpoint health/cooldown tracking and last-success preference. Temporarily failing/rate-limited public instances are skipped for a cooling period instead of being retried on every request.
+- Updated public Overpass fallbacks to current global endpoints, preferring `overpass.private.coffee`, then `overpass-api.de`, with `overpass.osm.jp` and VK Maps as additional fallbacks.
+- Added same-query single-flight deduplication in Home Assistant, so multiple open dashboards requesting the same POIs share one Overpass network task instead of duplicating public API load.
+- Replaced the old global serialized POI lock with a bounded two-request semaphore plus queue timeout; one slow query can no longer create an unbounded backlog of stale requests.
+- POI success status now includes backend duration, making slow/failing requests easier to diagnose.
+- Kept the existing **2 / 5 / 10 / 25 / 50 / 100 / 150 / 200 km** radii, presets, filters, OpenFreeMap basemap, Satellite/Topo/GPS modes and all Analytics/Daily Ledger/range logic unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.28.js?v=0.1.28`.
+
+## 0.1.27
+
+- Fixed POI refresh semantics: the manual **Aktualisieren** action now bypasses both the browser cache and the Home Assistant in-memory POI cache, so it performs a genuinely fresh Overpass request.
+- Added single-flight/coalescing for POI requests in the map card. Filter/radius edits made while an Overpass request is running no longer queue multiple stale backend requests; only the newest requested state is fetched next.
+- Free-text POI search is now also narrowed server-side across common OSM name/brand/operator/network/address tags, while the same filter is still applied client-side. This makes targeted searches such as Tesla/IONITY much lighter at larger radii.
+- Extended POI radius choices to **2 / 5 / 10 / 25 / 50 / 100 / 150 / 200 km**.
+- Increased the automatic vehicle-movement threshold proportionally for large-radius POI searches (up to 20 km) to avoid wasteful re-querying of public Overpass infrastructure.
+- POI cache keys now include the free-text search filter, so differently targeted searches cannot reuse an unrelated cached result set.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.27.js?v=0.1.27`.
+- Map providers and the Analytics/Daily Ledger/historical range/GPS calculation logic remain unchanged from 0.1.26.
+
+## 0.1.26
+
+- Replaced the normal **OSM** basemap's direct `tile.openstreetmap.org` requests with the API-key-free **OpenFreeMap Liberty** vector style rendered by MapLibre GL JS, with visible OpenFreeMap/OpenMapTiles/OpenStreetMap attribution.
+- MapLibre is loaded lazily only for the OSM mode and reuses an already available global MapLibre instance when another card has loaded it.
+- Reworked the remaining raster tile renderer (Topo/Satellite) to reuse already mounted tile images while panning and during GPS follow; only newly exposed edge tiles are requested when crossing a tile boundary.
+- Added an explicit cross-origin referrer policy to raster tile image requests.
+- Kept OpenTopoMap, Esri World Imagery Satellite, GPS follow, POIs, POI presets/filters and all vehicle/map controls unchanged.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.26.js?v=0.1.26`.
+- Analytics, Daily Ledger, historical range, GPS and vehicle calculation logic remain unchanged.
+
+## 0.1.25
+
+- Added **fuel stations** (`amenity=fuel`) as a selectable POI category.
+- Added free-text POI filtering across name/address/brand/operator/network.
+- Added operator/network filtering (for example IONITY or Shell); this filter is also sent to the Home Assistant Overpass backend so targeted 50 km searches are narrowed before the result limit.
+- Added EV connector filters for CCS, Type 2, CHAdeMO and Tesla connector tags.
+- Added minimum charging-power filters (50/100/150/200/300/350 kW) plus an option to include POIs whose charging power is unknown in OSM.
+- Added parsing/display of charging output power from common OSM `*:output`, `charging_station:output`, `max_power` and `output` tags.
+- Added built-in POI filter presets: all charging stations, ≥100 kW fast charging, IONITY fast charging, fuel stations, food/break and parking/charging.
+- Added browser-local custom POI presets that store the complete filter combination and can be saved/overwritten or deleted.
+- Bumped the POI browser cache generation so older unfiltered cache entries cannot mask the new filter metadata.
+- Frontend resource/cache-busting filename is now `cardata-analytics-card-0.1.25.js?v=0.1.25`.
+- Analytics, Daily Ledger, historical range, GPS and vehicle calculation logic remain unchanged.
+
+## 0.1.24
+
+- Hard frontend cache bust: the Lovelace module now uses the new filename `cardata-analytics-card-0.1.24.js`, and storage-mode Lovelace resources matching older Cardata Analytics filenames are automatically replaced/cleaned up.
+- POI requests now always use the Home Assistant WebSocket backend; a legacy `overpass_url` setting can no longer silently switch back to browser-direct/CORS-sensitive Overpass requests.
+- Corrected both backend and remaining frontend Overpass query builders from `out tags center` to `out center`, preserving latitude/longitude for node POIs while adding centers for ways/relations.
+- Empty POI results are not cached.
+- Overpass backend fallbacks: `overpass-api.de`, `overpass.kumi.systems`, then `overpass.private.coffee`.
+- Added 50 km POI radius and pharmacy matching for both `amenity=pharmacy` and `healthcare=pharmacy` (retained from the previous POI fixes).
+- Satellite mode defaults to the API-key-free ArcGIS World Imagery XYZ endpoint used by the supplied Bosch eBike comparison card, with visible source attribution; custom `satellite_url` / `satellite_attribution` can still override it.
+- The map header and POI note show frontend version `0.1.24` to make stale-browser-resource problems immediately visible.
+- Analytics, Daily Ledger, historical range, vehicle and GPS calculation logic remain unchanged.
+
+## 0.1.23
+
+- Corrected the server-side Overpass query to preserve node coordinates with `out center`.
+- Stopped caching empty POI results.
+- Added `overpass.kumi.systems` as an additional public Overpass fallback.
+- Added a key-free ArcGIS World Imagery satellite default with attribution.
+
+## 0.1.22
+
+- Moved the default POI/Overpass network request from the Lovelace browser/Companion WebView to a Cardata Analytics Home Assistant websocket backend. This avoids browser-side CORS/WebView networking being a prerequisite for POI loading.
+- Added a small integration-level in-memory POI cache and serialized Overpass access in addition to the existing browser-local cache.
+- Kept the two conservative public Overpass fallbacks (`overpass-api.de`, then `overpass.private.coffee`) on the Home Assistant side and now returns the actual endpoint/error details to the map card.
+- Kept explicitly configured custom `overpass_url` values browser-direct instead of proxying arbitrary URLs through Home Assistant.
+- Kept the 2/5/10/25/50 km radii and pharmacy matching from 0.1.21.
+- Kept analytics, daily-ledger, date-range, GPS and vehicle calculations unchanged.
+
+
+## 0.1.21
+
+- Fixed POI loading that could remain stuck indefinitely when an Overpass request stalled by adding a bounded client-side request timeout.
+- Added a conservative automatic fallback from `overpass-api.de` to the public `overpass.private.coffee` instance when no custom `overpass_url` is configured.
+- Added a 50 km POI search radius.
+- Expanded pharmacy matching to include both `amenity=pharmacy` and `healthcare=pharmacy`; hospital matching now also accepts `healthcare=hospital`.
+- Bumped the local POI cache key so older cached results cannot mask the updated POI matching.
+- Kept analytics, daily-ledger, date-range, GPS and vehicle calculations unchanged.
+
+## 0.1.20
+
+- Added the current vehicle address directly to each vehicle section in `custom:cardata-analytics-card`, including GPS freshness and a Google Maps button; the location row stays hidden when GPS/address data is unavailable.
+- Added a **Satellite** map mode to `custom:cardata-analytics-map-card` with an explicit, provider-capable HTTPS tile configuration instead of relying on undocumented or unauthenticated commercial imagery endpoints.
+- Added card settings for satellite tile URL, required attribution text and maximum zoom.
+- Added an opt-in **POI** panel centred on the selected vehicle.
+- Added filterable POI categories for EV charging stations, workshops, restaurants, cafés, parking, supermarkets, hotels, pharmacies, hospitals and public toilets.
+- Added 2/5/10/25 km POI search radii.
+- Added browser-side OpenStreetMap Overpass queries with debounce, a minimum request interval, 429/406 backoff, a 500-result display limit and 15-minute browser-local caching.
+- Added automatic marker clustering for dense POI results.
+- Added POI popups with category, available address/details, straight-line distance from the selected vehicle and optional opening hours, operator, phone, website, access/fee and charging-connector details when present in OSM.
+- Added **Navigation** links using exact POI coordinates in Google Maps directions URLs, plus Google Maps location and OpenStreetMap source links.
+- Persist POI filters/radius together with the existing browser-local map preferences.
+- Kept the analytics calculations, daily ledger, date-range logic and Nominatim reverse-geocoding behavior unchanged from 0.1.19 apart from the integration/User-Agent version bump.
+
+
+## 0.1.19
+
+- Added a second Lovelace card: `custom:cardata-analytics-map-card`.
+- Automatically discovers every Cardata Analytics vehicle with configured latitude/longitude sensors.
+- Added OSM and OpenTopoMap map modes plus a GPS follow mode for the selected vehicle.
+- Added plus/minus zoom, drag/touch panning, fullscreen mode and a fullscreen fallback for restricted clients.
+- Added per-vehicle visibility controls, show-all/hide-all and automatic fit-to-visible-vehicles.
+- Added vehicle marker popups with current address, SoC, remaining range, odometer, GPS freshness and a Google Maps link.
+- Added local browser persistence for map mode, zoom, center, selected vehicle and visibility choices.
+- Kept the analytics calculations, daily ledger, date-range calculations and Nominatim reverse-geocoding behavior unchanged from 0.1.18 (only the Nominatim User-Agent version string is bumped).
+- POI/charging/workshop discovery remains intentionally deferred to a later map release.
+
+## 0.1.18
+
+- Added optional GPS latitude and longitude source sensors for every vehicle type, including generic BEVs and the BMW convenience presets.
+- Existing vehicles can add or change GPS sources through the normal Reconfigure flow; latitude and longitude must be configured as a pair.
+- Added analytics GPS Latitude and GPS Longitude sensors plus a Current Address sensor when GPS sources are configured.
+- Added API-key-free reverse geocoding through OpenStreetMap Nominatim with persistent per-vehicle address caching.
+- Added conservative Nominatim request controls: approximately 100 m movement threshold, five-minute per-vehicle minimum interval and a globally serialized >1 second request interval across all Cardata Analytics vehicles.
+- A temporary GPS/manufacturer-cloud or Nominatim outage keeps the last successful address available and exposes cache/source health in sensor attributes.
+- Added a Google Maps URL attribute generated directly from the current/last-known coordinates; no Google API key is required.
+- The existing dashboard card layout is intentionally unchanged in this release; location presentation can be added separately.
+
+## 0.1.17
+
+- Fix the shared comparison-range controller being created more than once when Home Assistant sets up several Cardata Analytics config entries concurrently.
+- All vehicle runtimes and the global From/To/preset entities now use the exact same controller instance.
+- Date and select platforms now use the controller attached to their own global config entry instead of looking it up again in `hass.data`.
+- This fixes selected-period values appearing stuck on one vehicle (for example today's 59 km) while another vehicle remains at 0 km after changing the global range.
+
+## 0.1.16
+
+- Fixed per-vehicle comparison-range coverage so every requested historical calendar day must exist in that vehicle's daily ledger.
+- Coverage no longer trusts the stored config-entry/tracking timestamp as proof that historical data exists. This fixes long ranges being shown as complete for some vehicles while another vehicle correctly reported missing history.
+- For a range such as 02.09-08.09 with only 07.09 stored, all vehicles now report the range as incomplete and expose no misleading full-range value.
+- `historical_days_expected` and `historical_days_covered` now refer to the complete requested historical part of the selected range for every vehicle.
+- `coverage_available_from` is derived from the first actually complete daily-ledger entry when available.
+- Improved the dashboard warning for missing daily history to show the available-from date and covered/expected historical-day count.
+
+## 0.1.15
+
+- Fix duplicate current-day distance while an odometer source is unavailable.
+- If the last valid odometer sample is from an earlier local day, today's Day baseline is rebased to that frozen last-known odometer instead of reusing an older baseline.
+- Keeps Week/Month/Year and recovered historical days untouched, so an already recovered historical distance is not counted a second time as today.
+- When the manufacturer source returns, new distance automatically accumulates from the frozen current-day baseline.
+- Adds diagnostic metadata for an automatic stale-baseline repair.
+
+## 0.1.14
+
+- Added generic historical-day recovery for all BEVs; this is not tied to Renault or any manufacturer.
+- If exactly one completed day inside the current week/month/year is missing, incomplete, or stored as an implausible 0/0 while the aggregate counters contain an unassigned residual, Cardata Analytics reconstructs that day deterministically.
+- Recovery uses the shortest available aggregate bucket first (week, then month, then year) and never distributes values when two or more days are ambiguous.
+- Recovered ledger entries are marked with `source: aggregate_recovery` and `recovered_from` provenance.
+- Recovery is retried at startup, after relevant source updates, at midnight, and during the hourly maintenance refresh, allowing a day to be repaired when an upstream cloud integration comes back later.
+- Added `daily_history_last_recovery` diagnostics to selected-period sensor attributes.
+- Bumped the daily-history schema to version 3 while preserving existing ledger data.
+
+
+## 0.1.13
+
+- Fixed selected-period values remaining stale while the quick-selection/date control kept keyboard focus.
+- The frontend interaction guard now blocks state patches only while a native picker is actually being used, not merely while the control remains focused.
+- A committed quick-selection/date change now immediately releases the guard and continues to accept the subsequent vehicle sensor updates.
+
+## 0.1.12
+
+- Reworked selected-period calculation to be synchronous and derived from the current `From`/`To` dates on every sensor snapshot.
+- Removed the cached/asynchronous selected-range result path that could leave yesterday's values visible after the date controls changed.
+- Completed days still come from the persistent daily ledger; today is added only when today is inside the selected interval.
+- This makes `07.09 -> 07.09`, `08.09 -> 08.09`, and `07.09 -> 08.09` deterministic without Recorder timing or stale refresh races.
+
+## 0.1.11
+
+- Fixed the 0.1.10 first-day ledger migration that could persist today's distance/energy under yesterday's date after an upgrade or restart.
+- On upgrade, the first completed tracking day is now deterministically repaired from the integration lifetime odometer baseline minus today's distance, and lifetime consumed energy minus today's energy.
+- Existing incorrect first-day ledger entries are overwritten when the vehicle started tracking yesterday (for example i3 59 km -> 12 km and Twingo 0 km -> 15 km for 2026-09-07 in the reported test case).
+- Added a persistent integration-level `tracking_start_mileage` baseline so the repair remains valid across normal period resets.
+- A Home Assistant restart that misses the exact midnight boundary no longer assigns the live startup odometer to the previous day. Such a day is marked incomplete unless it can be reconstructed safely.
+- Added `complete` metadata to daily-ledger entries and exclude explicitly incomplete days from full selected-range results.
+- Added `daily_history_schema`, `daily_history_last_repair` and `daily_history_last_entry` diagnostics to selected-period sensor attributes.
+
+## 0.1.10
+
+- Replaced custom-range history calculation with a persistent per-vehicle daily ledger.
+- Custom date ranges no longer depend on Recorder aggregation timing or hourly statistic boundaries.
+- Completed days are archived as exact daily distance and energy totals; the current day still uses live counters.
+- Added a one-time migration for installations that started on the previous day, reconstructing yesterday from existing Year/Day distance and lifetime/Day energy counters.
+- Preserved long-term statistics sensors for graphs and independent Home Assistant history.
+- Added daily-ledger diagnostics to selected-period sensor attributes (`history_backend`, stored day count, first/last stored date).
+- Kept the 0.1.9 generation/lock protection against stale range refreshes.
+
+## 0.1.9
+
+- Fixed selected-period values sometimes remaining on the previous date range after changing the comparison dates.
+- Replaced the boolean/pending refresh guard with a serialized `asyncio.Lock`, so a range change waits for the current Recorder query and then recalculates the latest range before the service call completes.
+- Added a range-generation token so an older Recorder query can never commit its result after a newer range selection, even if the same dates are selected again later.
+- Historical completed days are now calculated by summing Home Assistant Recorder hourly `change` rows inside the exact local-calendar interval instead of using a single summary delta.
+- This specifically fixes a first-tracking-day edge case where selecting Yesterday could still show Yesterday + Today (for example 71 km instead of 12 km).
+- Today's live counters remain separate and are only added when today is actually inside the selected range.
+- The global date controller now clears vehicle range results before publishing new date values, preventing a brief new-date/old-value mismatch in the dashboard.
+- Kept the persistent last-known odometer fallback introduced in 0.1.8 for temporary manufacturer/cloud outages.
+
+## 0.1.8
+
+- Keep odometer-based analytics usable during temporary manufacturer/cloud outages that expose the configured mileage source as `unavailable`.
+- When upgrading while the source is already offline, restore the latest known analytics odometer from existing Recorder statistics when available, so the fallback works immediately after the update.
+- Persist the most recently valid normalized odometer value per vehicle and use it as a read-only fallback until the live source returns.
+- Today/week/month/year distance sensors no longer collapse to 0 solely because the live odometer source is temporarily unavailable.
+- Selected periods that include today continue to calculate with the last known odometer value instead of failing with `source_unavailable`, provided at least one valid odometer sample was seen before the outage.
+- The fallback never invents distance: mileage remains frozen at the last valid reading and automatically catches up when the source becomes available again.
+- Added diagnostic attributes to the mileage and selected-period sensors: `source_available`, `using_last_known_value` / `using_last_known_mileage`, and the timestamp of the last valid source update.
+- If no valid mileage value has ever been available, selected periods containing today still remain unavailable rather than silently assuming 0 km.
+
+## 0.1.7
+
+- Fixed selected-period calculations not updating correctly when switching between Today, Yesterday and multi-day ranges.
+- Restored interval-based Recorder aggregation with Home Assistant `statistic_during_period()` for the cumulative mileage and consumed-energy analytics sensors.
+- A range covering yesterday and today now uses yesterday's exact Recorder delta plus today's live counters (for example 12 km + 59 km = 71 km).
+- A completed historical day such as Yesterday is queried directly from Recorder and no longer depends on a reduced daily-row result.
+- Coverage is again evaluated independently from the value calculation: ranges starting before a vehicle's first tracked calendar day remain incomplete and expose only diagnostic partial values.
+- Kept stale-query protection so results from an older date selection cannot overwrite the currently selected range.
+- Added an error log entry when a selected-period Recorder query fails, making future diagnostics visible in the Home Assistant log.
+
+## 0.1.6
+
+- Reworked custom-period aggregation to use Home Assistant Recorder daily long-term-statistics rows for both cumulative energy and mileage sensors.
+- Coverage is now derived from the historical data that actually exists per vehicle, instead of relying on stored config-entry/tracking timestamps.
+- A historical calendar day is considered covered only when both energy and mileage statistics exist for that day.
+- Fixed incomplete long ranges sometimes showing only today's values (or another recent overlap) as the selected-period result.
+- Fixed vehicles with inconsistent legacy tracking timestamps being treated as fully covered for dates before their actual Recorder history.
+- Today's selected-period values still come from live counters so the result updates immediately; an unavailable live mileage source now marks a range containing today as incomplete instead of silently using 0 km.
+- Added diagnostic coverage attributes: `coverage_available_from`, `historical_days_expected`, and `historical_days_covered`.
+- Simplified the dashboard coverage warning so the frontend trusts backend Recorder coverage instead of re-deriving it from tracking timestamps.
+
+## 0.1.5
+
+- Fixed stale selected-period values after changing the shared quick-selection or date range. The range service now waits for all vehicle recalculations to finish before returning.
+- Results from an older Recorder query are discarded if the global range changed while that query was running; the card is cleared to an updating state until the new range is ready.
+- Incomplete custom ranges no longer expose a partial overlap as if it were the complete selected-period result. The three selected-period sensor states remain unknown (`—` in the card) until the requested range is fully covered.
+- Partial overlap results are retained as diagnostic attributes: `partial_distance_km`, `partial_energy_kwh` and `partial_average_consumption`.
+- Coverage is evaluated per vehicle at calendar-day granularity: the first day on which tracking started is usable, while any requested day before that vehicle's tracking date marks the range incomplete.
+- Coverage metadata remains available even when the selected-period state is unknown, so every affected vehicle can show the warning consistently.
+- Added `tracking_started_at` and partial-result attributes to the dashboard state signature so warnings and values update reliably without a full card rebuild.
+- Failed Recorder refreshes now clear the previous selected-period result instead of risking stale values from an older range.
+
+## 0.1.4
+
+- Fixed per-vehicle coverage warnings in the dashboard card.
+- The card now independently verifies that the selected start date does not predate each vehicle's Analytics tracking start.
+- Prevents an affected vehicle from hiding the incomplete-history warning because of stale or delayed custom-period metadata.
+
+## 0.1.3
+
+- Fix custom historical ranges dropping valid driving data from the integration installation day.
+- Historical queries now start at the exact per-vehicle Analytics tracking timestamp instead of the following midnight.
+- Ranges that start before tracking began still expose `data_complete: false`, but all actually recorded Analytics data is included in the result.
+- Improve the dashboard coverage warning so partial ranges show when usable Analytics data starts.
+
+## 0.1.2
+
+- Register the dashboard card as a persistent Lovelace module resource instead of injecting it with `frontend.add_extra_js_url`.
+- Fix intermittent `Custom element doesn't exist: cardata-analytics-card` / configuration errors after normal browser or Companion App page reloads.
+- Automatically update the resource URL cache-buster to the installed integration version and remove duplicate Cardata Analytics resource entries.
+- Keep the existing static frontend path; YAML resource mode is detected and receives a clear log warning instead of being modified.
+
+## 0.1.1
+
+- Added selected-period historical data coverage checks.
+- Persist the start of analytics tracking per vehicle.
+- Historical custom ranges are conservatively considered fully covered only from the first complete local day after tracking started.
+- Requests that reach further back are calculated only for the reliable overlap and exposed as incomplete instead of pretending the full period exists.
+- Added coverage metadata to the custom-period sensors (`data_complete`, `coverage_status`, `history_complete_from`, `effective_data_from`).
+- Dashboard card now displays a warning when a selected range is only partially covered or Recorder statistics are missing.
+- Fixed a duplicated responsive CSS container rule in the dashboard card.
+
+## 0.1.0
+
+- First standalone release of **Cardata Analytics**.
+- Standalone Home Assistant domain `cardata_analytics`.
+- BMW i3 120 Ah and BMW iX1 presets.
+- Manufacturer-neutral `BEV` vehicle type.
+- Optional source SoH for iX1 and BEV; BMW i3 120 Ah retains the dedicated interpolated SoH curve.
+- SoC-based consumption tracking, distance, energy and average consumption for day/week/month/year.
+- Shared comparison period with quick presets including Today.
+- Automatic custom dashboard card `custom:cardata-analytics-card`.
+- Distance sources in km/mi/m and capacity sources in kWh/Wh/MWh are normalized internally.
+- HACS repository structure and validation workflows included.
