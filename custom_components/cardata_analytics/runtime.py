@@ -20,9 +20,9 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
-from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .database import DatabaseStore as Store
 from .const import (
     CONF_BATTERY_CAPACITY,
     CONF_ENERGY_ENTITY,
@@ -777,7 +777,7 @@ class VehicleRuntime:
                 params["accept-language"] = str(language)
             headers = {
                 "User-Agent": (
-                    "CardataAnalytics/0.1.67 "
+                    "CardataAnalytics/0.1.68 "
                     "(+https://github.com/lemuba/cardata-analytics)"
                 )
             }

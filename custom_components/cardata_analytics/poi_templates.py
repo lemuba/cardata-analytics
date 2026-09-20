@@ -10,8 +10,8 @@ import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
 
+from .database import DatabaseStore as Store
 from .const import DOMAIN
 from .poi import POI_CLAUSES
 

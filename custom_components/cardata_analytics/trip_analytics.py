@@ -6,12 +6,13 @@ from datetime import datetime, timedelta
 import math
 from typing import Any
 
-from homeassistant.components.recorder import get_instance, history
+from homeassistant.components.recorder import history
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .analytics_repair import _applied_repair_excess_by_day
 from .const import DOMAIN
+from .measurement_history import async_history
 
 
 def _meter_delta(states: list[Any], start: datetime, end: datetime, quantity: str = "energy") -> tuple[float | None, str]:
@@ -83,7 +84,7 @@ async def async_trip_analytics(hass: Any, entry: Any, start: datetime, end: date
     ids = [entity_id for entity_id in (energy_id, mileage_id) if entity_id]
     if not ids:
         return result
-    fetched = await get_instance(hass).async_add_executor_job(_fetch, hass, start, end, ids)
+    fetched = await async_history(hass, entry, start, end, ids, _fetch)
     if energy_id:
         result["energy_kwh"], result["energy_status"] = _meter_delta(fetched.get(energy_id, []), start, end)
     if mileage_id:

@@ -14,13 +14,14 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
-from homeassistant.components.recorder import get_instance, history
+from homeassistant.components.recorder import history
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_MILEAGE_ENTITY, CONF_SOC_ENTITY, DATA_RUNTIMES, DOMAIN, SIGNAL_UPDATE
 from .soc_filter import SocSample, filter_historical_soc
+from .measurement_history import async_history
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -297,10 +298,7 @@ async def _analyze(
     soc_id = runtime.entry.data.get(CONF_SOC_ENTITY)
     mileage_id = runtime.entry.data.get(CONF_MILEAGE_ENTITY)
     entity_ids = [entity for entity in (soc_id, mileage_id) if entity]
-    recorder = get_instance(hass)
-    fetched = await recorder.async_add_executor_job(
-        _fetch_history, hass, start_utc, end_utc, entity_ids
-    )
+    fetched = await async_history(hass, runtime.entry, start_utc, end_utc, entity_ids, _fetch_history)
     soc_states = list(fetched.get(soc_id, [])) if soc_id else []
     mileage_states = list(fetched.get(mileage_id, [])) if mileage_id else []
     samples = _attach_mileage(soc_states, mileage_states)

@@ -32,11 +32,11 @@ from .const import (
     DOMAIN,
 )
 from .trip_analytics import async_trip_analytics
+from .database import DB_FILENAME, async_database, get_database
 
 _LOGGER = logging.getLogger(__name__)
 
 DATA_MANAGER = "tracking_manager"
-DB_FILENAME = f"{DOMAIN}_tracking.db"
 TRACK_MIN_MOVE_METERS = 8.0
 TRACK_MIN_INTERVAL_SECONDS = 5.0
 TRACK_HEARTBEAT_SECONDS = 30 * 60.0
@@ -157,6 +157,7 @@ class TrackingManager:
         self._cleanup_unsub: Any | None = None
 
     async def async_setup(self) -> None:
+        await async_database(self.hass)
         await self.hass.async_add_executor_job(self._init_db)
         self._settings = await self.hass.async_add_executor_job(self._load_settings)
         self._cleanup_unsub = async_track_time_change(
@@ -164,13 +165,9 @@ class TrackingManager:
         )
         await self.async_cleanup_retention()
 
-    def _connect(self) -> sqlite3.Connection:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(self.path, timeout=30)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA synchronous=NORMAL")
-        return con
+    def _connect(self):
+        # Shared database settings and explicitly closed connections.
+        return get_database(self.hass).connect()
 
     def _init_db(self) -> None:
         with self._connect() as con:

@@ -14,7 +14,7 @@ from homeassistant.components.lovelace.const import (
 )
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.config_entries import ConfigEntry, SOURCE_IMPORT
-from homeassistant.const import CONF_ID, CONF_TYPE, CONF_URL
+from homeassistant.const import CONF_ID, CONF_TYPE, CONF_URL, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -29,6 +29,9 @@ from .const import (
     ENTRY_KIND_GLOBAL,
     ENTRY_KIND_VEHICLE,
 )
+from .database import async_database
+from .measurement_history import MeasurementArchive
+from .preferences import async_register_websocket as async_register_preferences_websocket
 from .controller import GlobalRangeController
 from .runtime import VehicleRuntime
 from .poi import async_register_websocket
@@ -44,8 +47,8 @@ from .tracking import (
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.67.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.67"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.68.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.68"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 
@@ -125,8 +128,21 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     if domain_data.get(DATA_FRONTEND_REGISTERED):
         return True
 
+    # Migration must finish before any subsystem reads or writes persistence.
+    # Never continue with empty analytics after a failed/corrupt migration.
+    await async_database(hass)
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        await _async_snapshot_config(hass, entry)
+
+    async def _stop_archives(event):
+        for archive in list(domain_data.get("measurement_archives", {}).values()):
+            await archive.stop()
+
+    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop_archives)
+
     # POI network access runs server-side through Home Assistant so Lovelace
     # browsers and Companion WebViews do not depend on third-party CORS.
+    async_register_preferences_websocket(hass)
     async_register_websocket(hass)
     async_register_template_websocket(hass)
     async_register_route_websocket(hass)
@@ -232,9 +248,20 @@ async def _async_ensure_global_entry(hass: HomeAssistant) -> None:
         domain_data[DATA_GLOBAL_ENTRY_PENDING] = False
 
 
+async def _async_snapshot_config(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Keep an exportable copy; HA remains authoritative for config entries."""
+    db = await async_database(hass)
+    await hass.async_add_executor_job(db.save_config, entry.entry_id, {
+        "title": entry.title, "data": dict(entry.data), "options": dict(entry.options),
+        "unique_id": entry.unique_id, "version": entry.version,
+    })
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Cardata Analytics from a config entry."""
     domain_data = hass.data.setdefault(DOMAIN, {})
+    await _async_snapshot_config(hass, entry)
+    entry.async_on_unload(entry.add_update_listener(_async_snapshot_config))
     controller = await _async_get_controller(hass)
 
     if _entry_kind(entry) == ENTRY_KIND_GLOBAL:
@@ -261,6 +288,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 
+    archive = MeasurementArchive(hass, entry)
+    await archive.start()
+    domain_data.setdefault("measurement_archives", {})[entry.entry_id] = archive
+
     # The comparison range is a separate integration-managed config entry so it
     # remains shared by all vehicles without being attached to a vehicle device.
     hass.async_create_task(_async_ensure_global_entry(hass))
@@ -276,6 +307,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not unload_ok:
         return False
 
+    archive = hass.data.get(DOMAIN, {}).get("measurement_archives", {}).pop(entry.entry_id, None)
+    if archive is not None:
+        await archive.stop()
     tracking = get_tracking_manager(hass)
     if tracking is not None:
         await tracking.async_unregister_entry(entry.entry_id)

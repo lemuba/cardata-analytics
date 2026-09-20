@@ -10,9 +10,9 @@ from typing import Any
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_change
-from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .database import DatabaseStore as Store
 from .const import (
     DOMAIN,
     RANGE_PRESET_CUSTOM,

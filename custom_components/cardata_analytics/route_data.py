@@ -12,8 +12,8 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.storage import Store
 
+from .database import DatabaseStore as Store
 from .const import (
     DATA_NOMINATIM_LAST_REQUEST,
     DATA_NOMINATIM_LOCK,
@@ -282,7 +282,7 @@ async def _async_geocode(hass: HomeAssistant, query: str, limit: int) -> list[di
         if language:
             params["accept-language"] = str(language)
         headers = {
-            "User-Agent": "CardataAnalytics/0.1.67 (+https://github.com/lemuba/cardata-analytics)"
+            "User-Agent": "CardataAnalytics/0.1.68 (+https://github.com/lemuba/cardata-analytics)"
         }
         domain_data[DATA_NOMINATIM_LAST_REQUEST] = monotonic()
         session = async_get_clientsession(hass)

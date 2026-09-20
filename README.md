@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.67  
+> **Current release:** v0.1.68
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.67; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.68; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -66,6 +66,29 @@ kWh_per_100km = consumed_kWh / driven_km × 100
 The quality of these values depends on the precision and update frequency of the source sensors. Cardata Analytics does not invent missing vehicle data.
 
 ---
+
+## Central database — v0.1.68
+
+Cardata now stores its durable application data in **`.storage/cardata_analytics.db`**:
+
+- GPS points and per-vehicle tracking settings, with existing retention rules.
+- Daily Ledger rows, complete runtime counters/baselines, SoC guard state, repair backups and applied repair records.
+- Global comparison range, saved routes/destinations and POI templates.
+- Copies of Cardata config entries (including configured credentials) for a future dedicated restore workflow. Home Assistant remains authoritative for integration entries and entity/device registries.
+- Counter and source measurement history with explicit coverage intervals and provenance.
+- Map preferences per authenticated HA user and card `storage_key`; localStorage remains a browser cache. Existing browser preferences migrate when that card is opened. Devices sharing the same user and card key load the same saved profile on reopening; this is not continuous live synchronization.
+
+**Automatic migration:** on the first start, Cardata builds a temporary database, copies the existing GPS database using SQLite's backup API (including committed WAL data), imports the legacy Cardata Stores and verifies exact Store round trips and database integrity before publishing the new file. Ledger and per-day repair records occupy separate tables; the existing analytics calculations and repair semantics are unchanged. Failed migration stops setup rather than starting with empty values. Unsupported future database schemas are rejected.
+
+The old `cardata_analytics_tracking.db` and `cardata_analytics.*` Store files remain untouched as the **pre-migration fallback**. They are no longer updated. Merely reinstalling v0.1.67 therefore does not preserve data recorded after migration. Take a full HA backup before the first upgrade; a complete fallback requires the matching old code and saved state.
+
+**Durable measurement history:** relevant existing Cardata energy/odometer sensor states and configured source measurements (SoC, odometer, capacity/energy, range and SoH where configured) are archived locally. GPS location changes are not added to this measurement archive; GPS recording remains opt-in. Available Recorder history since the vehicle's tracking start is imported in background chunks. Large histories can take time; progress is checkpointed and retried after reload on failure. Queries also archive available missing Recorder history. Already deleted history cannot be recovered. No new consumption formula or division of daily energy among trips is introduced.
+
+State changes are batched, normally flushed each minute and on a clean stop. A power loss may lose the unflushed tail; that interval is not marked covered. A new session starts fresh coverage so downtime is not silently treated as zero consumption. Archived measurements are retained without automatic pruning in this first database release; GPS retention and deletion affect GPS only. Plan storage accordingly.
+
+**Scope:** downloadable map tiles, temporary POI/provider caches and HA-owned dashboards/integration registries are not moved into the database. Vehicle settings are copied for future remapping but this release does not offer a standalone backup/restore UI or automatically recreate a fresh HA installation. A SQLite snapshot primitive is included for that next stage; do not copy only the active `.db` file while ignoring its WAL.
+
+**Upgrade verification:** after restarting HA, check the central database name in the Tracking panel, compare vehicle totals and selected historical ranges, confirm previous SoC corrections remain applied, and verify GPS count/retention plus saved templates. Reopen the map to check preference migration. The automated tests use real SQLite with HA/DOM adapters; a live HA/browser upgrade test remains necessary.
 
 ## Requirements
 
@@ -270,9 +293,9 @@ Some upstream vehicle integrations occasionally publish a short-lived incorrect 
 
 From v0.1.64 Cardata Analytics uses a directional short-zig-zag guard for this failure mode. A false high source value may return **below** the exact pre-spike SoC because the vehicle can keep consuming energy while the bad sample is present. For example, `67 % → 100 % → 54 %` is treated as the real `67 % → 54 %` decline when the 100% pulse is short. Repeated short pulses are evaluated independently. Very short round trips can be rejected even while the odometer advances; outside the hard short window Cardata keeps the more conservative odometer/stability checks. Normal monotonic driving and genuine charging remain accepted.
 
-The Analytics card also provides **SoC data check** below each vehicle. The check always uses the **currently selected comparison range** (for example Last 7 days), reads the configured source SoC and odometer history from Home Assistant Recorder and shows a preview before changing anything. The preview lists detected spikes by day, the current Cardata energy, the proposed corrected value and the exact additional kWh reduction. A day that was already repaired can still appear in the preview, but it is marked as already corrected and is not subtracted again.
+The Analytics card also provides **SoC data check** below each vehicle. The check always uses the **currently selected comparison range** (for example Last 7 days), reads locally archived source SoC and odometer history, falling back to available Home Assistant Recorder history and shows a preview before changing anything. The preview lists detected spikes by day, the current Cardata energy, the proposed corrected value and the exact additional kWh reduction. A day that was already repaired can still appear in the preview, but it is marked as already corrected and is not subtracted again.
 
-Applying the preview changes only Cardata Analytics data: affected Daily Ledger entries, currently active Day/Week/Month/Year energy buckets and the lifetime Cardata consumed-energy total are adjusted by the newly detected phantom-energy delta. Cardata stores a diagnostic backup plus a per-day cumulative repair ledger. This makes repeated analyses/applications idempotent: previously removed spike energy is not removed a second time, while a later improved detector may still offer only the newly discovered remainder. The original manufacturer/source SoC history in Home Assistant Recorder is **not edited or deleted**. If Recorder does not contain enough source history, Cardata refuses the repair instead of guessing.
+Applying the preview changes only Cardata Analytics data: affected Daily Ledger entries, currently active Day/Week/Month/Year energy buckets and the lifetime Cardata consumed-energy total are adjusted by the newly detected phantom-energy delta. Cardata stores a diagnostic backup plus a per-day cumulative repair ledger. This makes repeated analyses/applications idempotent: previously removed spike energy is not removed a second time, while a later improved detector may still offer only the newly discovered remainder. The original manufacturer/source SoC history in Home Assistant Recorder is **not edited or deleted**. If neither the archive nor Recorder contains enough source history, Cardata refuses the repair instead of guessing.
 
 ### Temporary source outages
 
@@ -290,7 +313,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.67.js?v=0.1.67
+  - url: /cardata_analytics/cardata-analytics-card-0.1.68.js?v=0.1.68
     type: module
 ```
 
@@ -451,11 +474,11 @@ The trip list defaults to **Newest first** and can be switched to **Oldest first
 
 The selected trip shows **Start SoC**, **End SoC**, **Energy consumed (kWh)** and **Average consumption (kWh/100 km)**. SoC comes from the first/last stored GPS observations, before map simplification. Missing endpoint SoC is shown as unavailable rather than substituted with a value from another time.
 
-Consumption reuses the existing Cardata **total consumed energy** sensor history in Home Assistant Recorder, taking the counter difference between the stored GPS start and end timestamps. Average consumption uses the corresponding existing Cardata **odometer** history, not the GPS polyline distance. The calculation distance is shown alongside the source explanation because it can differ from the GPS distance. Existing entity IDs are resolved through the entity registry, including renamed entities. No new energy recording, battery-capacity estimate or changes to existing Analytics calculations are introduced.
+Consumption reuses the existing Cardata **total consumed energy** sensor history in the local measurement archive, with Home Assistant Recorder as a fallback, taking the counter difference between the stored GPS start and end timestamps. Average consumption uses the corresponding existing Cardata **odometer** history, not the GPS polyline distance. The calculation distance is shown alongside the source explanation because it can differ from the GPS distance. Existing entity IDs are resolved through the entity registry, including renamed entities. Existing sensor measurements are now archived locally; no battery-capacity estimate or changes to existing Analytics calculations are introduced.
 
 The Daily Ledger stores **daily totals**, not timestamped per-trip allocations. A retained daily total therefore cannot substitute for missing intraday counter history. A missing start state, an unavailable interval, counter reset/correction or a previously repaired SoC day is explicitly marked unavailable; daily corrections are never spread across trips or applied again. Missing/zero odometer distance leaves the average unavailable even when energy is known. The existing Analytics counters themselves retain their original SoC-based calculation and filtering; this is not a new vehicle-side energy measurement.
 
-Trip details are read on selection and require the relevant Analytics sensor history to still exist in Recorder. The separate GPS database may retain tracks longer than that history. Recorder GPS import does not recreate missing Analytics energy history. As with all recorded states, values reflect the available sensor updates at the GPS boundaries; asynchronous or delayed vehicle reports can limit their temporal precision.
+Trip details are read on selection. Once the required counter history is fully archived, Recorder retention no longer removes it. Already-purged history cannot be reconstructed. Gaps across downtime must be filled from available Recorder data before local coverage is considered complete. Recorder GPS import does not recreate missing Analytics energy history. As with all recorded states, values reflect the available sensor updates at the GPS boundaries; asynchronous or delayed vehicle reports can limit their temporal precision.
 
 ### Map legend, scale and playback
 

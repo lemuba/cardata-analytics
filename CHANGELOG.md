@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.68
+
+- Unified durable Cardata data in `.storage/cardata_analytics.db`: GPS, tracking settings, Daily Ledger, runtime counters, repair state, comparison periods, route/destination and POI templates.
+- Added atomic migration from the previous GPS database and HA Stores, exact Store round-trip verification, integrity checks and schema-version guards. Legacy files remain untouched as a pre-migration fallback and are no longer updated.
+- Kept analytics formulas, entity identities, GPS acceptance rules and idempotent SoC repair semantics unchanged.
+- Added durable measurement history with local-first trip/repair queries, background Recorder backfill, preserved units and explicit coverage. Missing history and downtime are not treated as measured zero consumption.
+- Added config-entry snapshots for a future restore workflow; HA remains responsible for its own configuration and registries.
+- Moved map preferences to per-user/card database profiles, retaining localStorage as a cache and migrating existing preferences on first opening.
+- Added a consistent SQLite snapshot primitive. A user-facing backup/restore workflow is not part of this release.
+- Added migration, WAL-copy, rollback-on-error, restart, Recorder-purge, history-gap and preference synchronization regression tests. 75 automated tests passed (44 Python/SQLite + 31 frontend adapter tests); a live HA upgrade test is still required.
+- Frontend resource/cache-busting filename is `cardata-analytics-card-0.1.68.js?v=0.1.68`.
+
 ## 0.1.67
 
 - Added selected-trip Start/End SoC from stored GPS points and consumption from existing Analytics energy/odometer history. New read-only trip details reuse current counters, with no new energy recording or changes to Daily Ledger, SoC filtering or repair.
