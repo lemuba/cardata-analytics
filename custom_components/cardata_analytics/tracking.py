@@ -32,6 +32,7 @@ from .const import (
     DOMAIN,
 )
 from .trip_analytics import async_trip_analytics
+from .gps_sources import GPSSourcesMixin
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -142,11 +143,12 @@ class Point:
         }
 
 
-class TrackingManager:
+class TrackingManager(GPSSourcesMixin):
     """Own the local SQLite track store and vehicle GPS listeners."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
+        self._init_sources()
         self.path = Path(hass.config.path(".storage", DB_FILENAME))
         self._db_lock = asyncio.Lock()
         self._entries: dict[str, ConfigEntry] = {}
@@ -158,6 +160,7 @@ class TrackingManager:
 
     async def async_setup(self) -> None:
         await self.hass.async_add_executor_job(self._init_db)
+        await self._setup_sources()
         self._settings = await self.hass.async_add_executor_job(self._load_settings)
         self._cleanup_unsub = async_track_time_change(
             self.hass, self._async_cleanup_callback, hour=3, minute=17, second=0
@@ -221,6 +224,10 @@ class TrackingManager:
 
     async def async_register_entry(self, entry: ConfigEntry) -> None:
         self._entries[entry.entry_id] = entry
+        self._listen_source(entry.entry_id)
+        last = await self.hass.async_add_executor_job(self._last_point_db, entry.entry_id)
+        if last is not None:
+            self._last_points[entry.entry_id] = last
         if not entry.data.get(CONF_LATITUDE_ENTITY) or not entry.data.get(CONF_LONGITUDE_ENTITY):
             return
         if entry.entry_id in self._unsubs:
@@ -237,13 +244,13 @@ class TrackingManager:
         self._unsubs[entry.entry_id] = async_track_state_change_event(
             self.hass, entities, _handle_gps_change
         )
-        last = await self.hass.async_add_executor_job(self._last_point_db, entry.entry_id)
-        if last is not None:
-            self._last_points[entry.entry_id] = last
         if self.setting(entry.entry_id)["enabled"]:
             self._schedule_sample(entry.entry_id, delay=0.2)
 
     async def async_unregister_entry(self, entry_id: str) -> None:
+        source_unsub = self._source_unsubs.pop(entry_id, None)
+        if source_unsub:
+            source_unsub()
         unsub = self._unsubs.pop(entry_id, None)
         if unsub:
             unsub()
@@ -324,6 +331,10 @@ class TrackingManager:
     def _accept_candidate(self, previous: Point | None, point: Point) -> tuple[bool, Point]:
         if previous is None:
             return True, point
+        if point.ts <= previous.ts:
+            return False, point
+        if point.source != previous.source and (point.source.startswith("external:") or previous.source.startswith("external:")):
+            return True, point
         elapsed = point.ts - previous.ts
         if elapsed <= 0:
             return False, point
@@ -342,22 +353,32 @@ class TrackingManager:
         return True, point
 
     async def async_record_current(self, entry_id: str) -> bool:
-        entry = self._entries.get(entry_id)
-        if entry is None or not self.setting(entry_id)["enabled"]:
-            return False
-        point = self._current_candidate(entry)
-        if point is None:
-            return False
-        previous = self._last_points.get(entry_id)
-        accepted, point = self._accept_candidate(previous, point)
-        if not accepted:
-            return False
-        inserted = await self.hass.async_add_executor_job(
-            self._insert_point_db, entry_id, entry.title, point
-        )
-        if inserted:
-            self._last_points[entry_id] = point
-        return inserted
+        async with self._source_lock:
+            entry = self._entries.get(entry_id)
+            session = self._sessions.get(entry_id, {})
+            if entry is None:
+                return False
+            if session.get("active"):
+                point = self._external_candidate(entry)
+            elif session:
+                # Explicitly ended external trips stay parked; no silent fallback.
+                return False
+            elif self.setting(entry_id)["enabled"]:
+                point = self._current_candidate(entry)
+            else:
+                return False
+            if point is None:
+                return False
+            accepted, point = self._accept_candidate(self._last_points.get(entry_id), point)
+            if not accepted:
+                return False
+            inserted = await self.hass.async_add_executor_job(self._insert_point_db, entry_id, entry.title, point)
+            if inserted:
+                self._last_points[entry_id] = point
+                if session.get("active"):
+                    session["last_fix"] = point.as_dict()
+                    await self._persist_sources()
+            return inserted
 
     def _insert_point_db(self, entry_id: str, name: str, point: Point) -> bool:
         with self._connect() as con:
@@ -390,6 +411,17 @@ class TrackingManager:
     async def async_set_settings(self, entry_id: str, enabled: bool, retention_days: int) -> dict[str, Any]:
         if retention_days not in ALLOWED_RETENTION_DAYS:
             raise ValueError("Unsupported retention period")
+        if enabled:
+            async with self._source_lock:
+                if self._sessions.get(entry_id, {}).get("active"):
+                    raise ValueError("End the external GPS trip first")
+                previous_session = self._sessions.pop(entry_id, None)
+                try:
+                    await self._persist_sources()
+                except Exception:
+                    if previous_session is not None:
+                        self._sessions[entry_id] = previous_session
+                    raise
         setting = {"enabled": bool(enabled), "retention_days": int(retention_days)}
         self._settings[entry_id] = setting
         await self.hass.async_add_executor_job(self._save_setting_db, entry_id, setting)
@@ -443,9 +475,9 @@ class TrackingManager:
                     params.append(end_ts)
                 row = con.execute(
                     """SELECT COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts,
-                       SUM(CASE WHEN source='live' THEN 1 ELSE 0 END) AS live_count,
+                       SUM(CASE WHEN (source='live' OR source LIKE 'external:%') THEN 1 ELSE 0 END) AS live_count,
                        SUM(CASE WHEN source='recorder_import' THEN 1 ELSE 0 END) AS imported_count,
-                       MAX(CASE WHEN source='live' THEN ts END) AS last_live_ts
+                       MAX(CASE WHEN (source='live' OR source LIKE 'external:%') THEN ts END) AS last_live_ts
                        FROM track_points WHERE """ + " AND ".join(clauses),
                     params,
                 ).fetchone()
@@ -469,14 +501,16 @@ class TrackingManager:
                 {
                     "entry_id": entry_id,
                     "name": entry.title or str(entry.data.get(CONF_VEHICLE_NAME) or "Vehicle"),
-                    "gps_configured": bool(entry.data.get(CONF_LATITUDE_ENTITY) and entry.data.get(CONF_LONGITUDE_ENTITY)),
-                    "enabled": bool(setting["enabled"]),
+                    "gps_configured": bool(entry.data.get(CONF_LATITUDE_ENTITY) and entry.data.get(CONF_LONGITUDE_ENTITY)) or any(entry_id in s["vehicles"] for s in self._sources.values()) or bool(db.get(entry_id, {}).get("point_count")),
+                    "native_gps": bool(entry.data.get(CONF_LATITUDE_ENTITY) and entry.data.get(CONF_LONGITUDE_ENTITY)),
+                    "session": self._sessions.get(entry_id),
+                    "enabled": bool(setting["enabled"]) and entry_id not in self._sessions,
                     "retention_days": int(setting["retention_days"]),
                     **db.get(entry_id, {}),
                 }
             )
         vehicles.sort(key=lambda item: item["name"].casefold())
-        return {"vehicles": vehicles, "database": str(self.path.name)}
+        return {"vehicles": vehicles, "database": str(self.path.name), "sources": self._sources_status()}
 
     def _points_db(self, entry_id: str, start_ts: float, end_ts: float, limit: int | None = None) -> list[Point]:
         sql = "SELECT * FROM track_points WHERE vehicle_id=? AND ts>=? AND ts<=? ORDER BY ts"
@@ -498,7 +532,7 @@ class TrackingManager:
             gap = point.ts - prev.ts
             distance = _haversine_m(prev.lat, prev.lon, point.lat, point.lon)
             speed = distance / gap * 3.6 if gap > 0 else float("inf")
-            if gap > TRACK_SEGMENT_GAP_SECONDS or speed > TRACK_MAX_SPEED_KMH:
+            if gap > TRACK_SEGMENT_GAP_SECONDS or speed > TRACK_MAX_SPEED_KMH or (point.source != prev.source and (point.source.startswith("external:") or prev.source.startswith("external:"))):
                 segments.append([point])
             else:
                 segments[-1].append(point)
@@ -1013,6 +1047,7 @@ async def websocket_gpx(hass: HomeAssistant, connection: websocket_api.ActiveCon
 
 
 def async_register_websocket(hass: HomeAssistant) -> None:
+    websocket_api.async_register_command(hass, websocket_sources)
     websocket_api.async_register_command(hass, websocket_status)
     websocket_api.async_register_command(hass, websocket_settings)
     websocket_api.async_register_command(hass, websocket_query)
@@ -1041,5 +1076,23 @@ async def websocket_trip_details(hass: HomeAssistant, connection: websocket_api.
     except Exception:
         _LOGGER.exception("Could not read existing Analytics history for a GPS trip")
         connection.send_error(msg["id"], "history_unavailable", "Analytics history is unavailable")
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/tracking/sources", vol.Required("action"): str, vol.Optional("data", default={}): dict})
+@websocket_api.async_response
+async def websocket_sources(hass, connection, msg):
+    manager = get_tracking_manager(hass)
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Tracking is not ready")
+        return
+    if msg["action"] in {"save", "delete"} and not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Administrator required")
+        return
+    try:
+        result = await manager.async_source_action(msg["action"], msg["data"])
+    except (ValueError, KeyError, TypeError) as err:
+        connection.send_error(msg["id"], "invalid_source", str(err))
         return
     connection.send_result(msg["id"], result)

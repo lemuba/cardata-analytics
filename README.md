@@ -6,11 +6,11 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.67  
+> **Current release:** v0.1.69\
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
-> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.67; later releases add fixes and refinements without changing the basic card structure shown here.
+> **Screenshots and mobile support:** The screenshots in this README were captured in the **desktop view**. Both custom cards are responsive and are designed to remain fully usable on smartphones and tablets, including **iPhone/iOS**. Narrow layouts reflow the map controls, POI panels become vertically scrollable, route point picking uses a compact mobile mode, and fullscreen respects iPhone safe areas. The screenshots were captured from the v0.1.50 UI. The overall layout remains representative of v0.1.69; later releases add fixes and refinements without changing the basic card structure shown here.
 
 ---
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.67.js?v=0.1.67
+  - url: /cardata_analytics/cardata-analytics-card-0.1.69.js?v=0.1.69
     type: module
 ```
 
@@ -858,3 +858,24 @@ https://github.com/lemuba/cardata-analytics/issues
 MIT
 
 Forking, modifying and redistributing Cardata Analytics is **expressly welcome** under the terms of the MIT License. Forks and derivative projects are encouraged as long as the MIT license terms and required copyright/license notice are respected.
+
+
+## External GPS sources (v0.1.69)
+
+In **Map → Tracking → Manage GPS sources**, an administrator can add, edit or remove reusable location sources. Enter a name, select an existing Home Assistant entity with `latitude`/`longitude` attributes (for example `sensor.matthias_standort`, a Companion App `device_tracker`, or a `person`), and select the vehicles allowed to use it. Alternatively leave the location entity empty and specify separate latitude/longitude sensors. Sources can be saved while temporarily unavailable; recording waits for a valid fix. The form previews the current coordinates and accuracy.
+
+For a trip, select the phone next to the vehicle and press **Start trip**. Recording runs in Home Assistant, without an open dashboard. Press **End trip** when you park. The last accepted point remains the vehicle's map position; later phone movements are ignored. The position is only as current as the phone's latest accepted update. Existing vehicle GPS can be explicitly restored after ending an external trip by enabling its **Record GPS tracking** checkbox.
+
+There is no configured source-count limit. A source may be assigned to multiple vehicles but can record only one at a time. End its current trip before transferring it. Editing/removing an active source is blocked, and registering the same entity twice is rejected. Removing a source does not delete recorded tracks. Each external session has source provenance and a distinct segment boundary; single points are not shown as trips.
+
+Location data must be no older than 120 seconds; reported accuracy must be at most 100 m when available. Separate coordinate sensors must both be fresh. A recent cached fix may initialize the start position at the time Start trip is pressed. If data is stale or invalid, the session waits for a valid update. Phone location permissions and background updates still determine track coverage; Cardata cannot force the phone to transmit positions.
+
+Source definitions, allowed vehicles, sessions and the last accepted external position are stored centrally in an additive table in the existing tracking SQLite database. Active trips resume with incoming GPS updates after an HA restart. The daily ledger and other v0.1.67 storage mechanisms are unchanged. SoC, odometer and energy analytics continue to come from the vehicle, never from the phone.
+
+The map refreshes external vehicle positions approximately every 15 seconds while visible; historical trip selection/playback is preserved. The recorder import button continues to import the vehicle's configured native GPS history; external sources record only during manually started sessions and do not retrospectively import phone history.
+
+### Validation and first installation check
+
+Offline regression tests cover SQLite persistence, session restart, duplicate/exclusive source use, stale/invalid fixes, stopping, backend event callbacks, source boundaries, UI controls, map positions and the existing v0.1.67 features. Both the source tree and freshly extracted release ZIP are checked. These tests use Home Assistant and map adapters, not a running HA installation.
+
+After installing, restart Home Assistant and reload the frontend. For a short first trip, add your phone, start a Twingo session, check that the stored point count increases, end it, then verify that subsequent phone movement does not move the vehicle. Check **Bestand aktualisieren / Refresh stored data** to read committed database counts. Version 0.1.68 was withdrawn; this release uses the v0.1.67 baseline.

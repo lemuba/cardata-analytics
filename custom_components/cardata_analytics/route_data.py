@@ -282,7 +282,7 @@ async def _async_geocode(hass: HomeAssistant, query: str, limit: int) -> list[di
         if language:
             params["accept-language"] = str(language)
         headers = {
-            "User-Agent": "CardataAnalytics/0.1.67 (+https://github.com/lemuba/cardata-analytics)"
+            "User-Agent": "CardataAnalytics/0.1.69 (+https://github.com/lemuba/cardata-analytics)"
         }
         domain_data[DATA_NOMINATIM_LAST_REQUEST] = monotonic()
         session = async_get_clientsession(hass)
