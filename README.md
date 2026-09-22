@@ -862,7 +862,7 @@ Forking, modifying and redistributing Cardata Analytics is **expressly welcome**
 
 ## External GPS sources (v0.1.69)
 
-In **Map → Tracking → Manage GPS sources**, an administrator can add, edit or remove reusable location sources. Enter a name, select an existing Home Assistant entity with `latitude`/`longitude` attributes (for example `sensor.matthias_standort`, a Companion App `device_tracker`, or a `person`), and select the vehicles allowed to use it. Alternatively leave the location entity empty and specify separate latitude/longitude sensors. Sources can be saved while temporarily unavailable; recording waits for a valid fix. The form previews the current coordinates and accuracy.
+In **Map → Tracking → Manage GPS sources**, an administrator can add, edit or remove reusable location sources. Enter a name, select an existing Home Assistant entity with `latitude`/`longitude` attributes (for example `sensor.example_standort`, a Companion App `device_tracker`, or a `person`), and select the vehicles allowed to use it. Alternatively leave the location entity empty and specify separate latitude/longitude sensors. Sources can be saved while temporarily unavailable; recording waits for a valid fix. The form previews the current coordinates and accuracy.
 
 For a trip, select the phone next to the vehicle and press **Start trip**. Recording runs in Home Assistant, without an open dashboard. Press **End trip** when you park. The last accepted point remains the vehicle's map position; later phone movements are ignored. The position is only as current as the phone's latest accepted update. Existing vehicle GPS can be explicitly restored after ending an external trip by enabling its **Record GPS tracking** checkbox.
 
@@ -873,9 +873,3 @@ Location data must be no older than 120 seconds; reported accuracy must be at mo
 Source definitions, allowed vehicles, sessions and the last accepted external position are stored centrally in an additive table in the existing tracking SQLite database. Active trips resume with incoming GPS updates after an HA restart. The daily ledger and other v0.1.67 storage mechanisms are unchanged. SoC, odometer and energy analytics continue to come from the vehicle, never from the phone.
 
 The map refreshes external vehicle positions approximately every 15 seconds while visible; historical trip selection/playback is preserved. The recorder import button continues to import the vehicle's configured native GPS history; external sources record only during manually started sessions and do not retrospectively import phone history.
-
-### Validation and first installation check
-
-Offline regression tests cover SQLite persistence, session restart, duplicate/exclusive source use, stale/invalid fixes, stopping, backend event callbacks, source boundaries, UI controls, map positions and the existing v0.1.67 features. Both the source tree and freshly extracted release ZIP are checked. These tests use Home Assistant and map adapters, not a running HA installation.
-
-After installing, restart Home Assistant and reload the frontend. For a short first trip, add your phone, start a Twingo session, check that the stored point count increases, end it, then verify that subsequent phone movement does not move the vehicle. Check **Bestand aktualisieren / Refresh stored data** to read committed database counts. Version 0.1.68 was withdrawn; this release uses the v0.1.67 baseline.
