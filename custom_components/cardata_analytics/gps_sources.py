@@ -17,24 +17,28 @@ class GPSSourcesMixin:
         self._sessions = {}
         self._source_unsubs = {}
         self._source_lock = asyncio.Lock()
+        self._auto_rules = {}
+        self._auto_unsubs = {}
+        self._auto_timers = {}
 
     def _load_sources_db(self):
         with self._connect() as con:
             con.execute("CREATE TABLE IF NOT EXISTS gps_source_state (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
             row = con.execute("SELECT payload FROM gps_source_state WHERE id=1").fetchone()
-        return json.loads(row[0]) if row else {"sources": {}, "sessions": {}}
+        return json.loads(row[0]) if row else {"sources": {}, "sessions": {}, "auto_rules": {}}
 
     def _save_sources_db(self, payload):
         with self._connect() as con:
             con.execute("INSERT OR REPLACE INTO gps_source_state VALUES (1, ?)", (payload,))
 
     async def _persist_sources(self):
-        await self.hass.async_add_executor_job(self._save_sources_db, json.dumps({"sources": self._sources, "sessions": self._sessions}))
+        await self.hass.async_add_executor_job(self._save_sources_db, json.dumps({"sources": self._sources, "sessions": self._sessions, "auto_rules": self._auto_rules}))
 
     async def _setup_sources(self):
         data = await self.hass.async_add_executor_job(self._load_sources_db)
         self._sources = data["sources"]
         self._sessions = data["sessions"]
+        self._auto_rules = data.get("auto_rules", {})
 
     def _source_fix(self, source):
         ids = [source["entity_id"]] if source.get("entity_id") else [source["latitude_entity"], source["longitude_entity"]]
@@ -77,22 +81,58 @@ class GPSSourcesMixin:
 
     async def async_source_action(self, action, data):
         async with self._source_lock:
-            old = json.dumps({"sources": self._sources, "sessions": self._sessions})
+            old = json.dumps({"sources": self._sources, "sessions": self._sessions, "auto_rules": self._auto_rules})
             try:
                 result = self._source_action(action, data)
                 await self._persist_sources()
             except Exception:
                 saved = json.loads(old)
-                self._sources, self._sessions = saved["sources"], saved["sessions"]
+                self._sources, self._sessions, self._auto_rules = saved["sources"], saved["sessions"], saved["auto_rules"]
                 raise
             for entry_id in self._entries:
                 self._listen_source(entry_id)
+                self._listen_auto(entry_id)
+            if action == "stop":
+                entry_id = data.get("entry_id")
+                rule = self._auto_rules.get(entry_id)
+                if rule and self._auto_connected(rule):
+                    rule["blocked"] = True
+                    await self._persist_sources()
+                self._cancel_auto_timer(entry_id)
+            if action in {"auto_save", "auto_delete"}:
+                entry_id = data.get("entry_id")
+                if action == "auto_delete":
+                    self._cancel_auto_timer(entry_id)
+                if entry_id in self._entries:
+                    self.hass.async_create_task(self._reconcile_auto(entry_id))
             if action == "start":
                 self._last_points.pop(data["entry_id"], None)
                 self._schedule_sample(data["entry_id"], delay=0.1)
             return result
 
     def _source_action(self, action, data):
+        if action == "auto_save":
+            entry_id = data.get("entry_id")
+            source_id = data.get("source_id")
+            sensor = str(data.get("ssid_entity", ""))
+            ssid = str(data.get("ssid", "")).strip()
+            if entry_id not in self._entries or source_id not in self._sources or entry_id not in self._sources[source_id]["vehicles"]:
+                raise ValueError("GPS source is not assigned to this vehicle")
+            if not sensor.startswith("sensor.") or self.hass.states.get(sensor) is None or not ssid or len(ssid) > 100:
+                raise ValueError("Select an existing SSID sensor and a Wi-Fi network name")
+            if any(v != entry_id and r["ssid_entity"] == sensor and r["ssid"] == ssid for v, r in self._auto_rules.items()):
+                raise ValueError("This SSID already starts another vehicle")
+            current = self._auto_rules.get(entry_id, {})
+            if self._sessions.get(entry_id, {}).get("active") and self._sessions[entry_id].get("mode") == "auto":
+                raise ValueError("End the active automatic trip before changing its rule")
+            self._auto_rules[entry_id] = {"source_id": source_id, "ssid_entity": sensor, "ssid": ssid, "blocked": False}
+            return {}
+        if action == "auto_delete":
+            entry_id = data.get("entry_id")
+            self._auto_rules.pop(entry_id, None)
+            if self._sessions.get(entry_id, {}).get("active") and self._sessions[entry_id].get("mode") == "auto":
+                self._sessions[entry_id]["active"] = False
+            return {}
         if action == "save":
             source_id = data.get("source_id") or uuid4().hex
             if data.get("source_id") and source_id not in self._sources:
@@ -122,6 +162,7 @@ class GPSSourcesMixin:
             if any(s.get("active") and s["source_id"] == source_id for s in self._sessions.values()):
                 raise ValueError("End the active trip before deleting this source")
             self._sources.pop(source_id, None)
+            self._auto_rules = {v: r for v, r in self._auto_rules.items() if r["source_id"] != source_id}
             return {}
         entry_id = data.get("entry_id")
         if entry_id not in self._entries:
@@ -141,14 +182,78 @@ class GPSSourcesMixin:
         if any(s.get("active") and s["source_id"] == source_id for s in self._sessions.values()):
             raise ValueError("GPS source is already in use by another vehicle")
         self._sessions[entry_id] = {"source_id": source_id, "token": uuid4().hex, "active": True,
+                                    "mode": "auto" if data.get("mode") == "auto" else "manual", "suspended": False,
                                     "started": dt_util.utcnow().timestamp(), "last_fix": self._sessions.get(entry_id, {}).get("last_fix")}
         return {"waiting": self._source_fix(source) is None}
+
+    def _auto_connected(self, rule):
+        state = self.hass.states.get(rule["ssid_entity"]) if rule else None
+        return bool(rule) and state is not None and state.state == rule["ssid"]
+
+    def _cancel_auto_timer(self, entry_id):
+        task = self._auto_timers.pop(entry_id, None)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _listen_auto(self, entry_id):
+        unsub = self._auto_unsubs.pop(entry_id, None)
+        if unsub:
+            unsub()
+        rule = self._auto_rules.get(entry_id)
+        if not rule or entry_id not in self._entries:
+            self._cancel_auto_timer(entry_id)
+            return
+
+        @callback
+        def changed(event):
+            self.hass.async_create_task(self._reconcile_auto(entry_id))
+
+        self._auto_unsubs[entry_id] = async_track_state_change_event(self.hass, [rule["ssid_entity"]], changed)
+
+    async def _reconcile_auto(self, entry_id):
+        rule = self._auto_rules.get(entry_id)
+        if not rule or entry_id not in self._entries:
+            return
+        if self._auto_connected(rule):
+            self._cancel_auto_timer(entry_id)
+            session = self._sessions.get(entry_id, {})
+            if session.get("active") and session.get("mode") == "auto" and session.get("suspended"):
+                async with self._source_lock:
+                    session["suspended"] = False
+                    await self._persist_sources()
+                    self._schedule_sample(entry_id, delay=0.1)
+            elif not session.get("active") and not rule.get("blocked"):
+                try:
+                    await self.async_source_action("start", {"entry_id": entry_id, "source_id": rule["source_id"], "mode": "auto"})
+                except ValueError:
+                    # A shared phone may already be in use by another vehicle.
+                    return
+            return
+        if rule.get("blocked"):
+            rule["blocked"] = False
+            await self._persist_sources()
+        session = self._sessions.get(entry_id, {})
+        if session.get("active") and session.get("mode") == "auto":
+            session["suspended"] = True
+            self._cancel_auto_timer(entry_id)
+            self._auto_timers[entry_id] = self.hass.async_create_task(self._auto_disconnect(entry_id, session["token"]))
+
+    async def _auto_disconnect(self, entry_id, token):
+        try:
+            await asyncio.sleep(90)
+            if not self._auto_connected(self._auto_rules.get(entry_id, {})) and self._sessions.get(entry_id, {}).get("token") == token:
+                await self.async_source_action("stop", {"entry_id": entry_id, "automatic": True})
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._auto_timers.get(entry_id) is asyncio.current_task():
+                self._auto_timers.pop(entry_id, None)
 
     def _external_candidate(self, entry):
         from .tracking import Point, _state_number
         from .const import CONF_MILEAGE_ENTITY, CONF_SOC_ENTITY
         session = self._sessions.get(entry.entry_id, {})
-        if not session.get("active"):
+        if not session.get("active") or session.get("suspended"):
             return None
         source = self._sources.get(session["source_id"])
         fix = self._source_fix(source) if source else None

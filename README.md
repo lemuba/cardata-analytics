@@ -6,7 +6,7 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.69\
+> **Current release:** v0.1.70\
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.69.js?v=0.1.69
+  - url: /cardata_analytics/cardata-analytics-card-0.1.70.js?v=0.1.70
     type: module
 ```
 
@@ -862,7 +862,7 @@ Forking, modifying and redistributing Cardata Analytics is **expressly welcome**
 
 ## External GPS sources (v0.1.69)
 
-In **Map → Tracking → Manage GPS sources**, an administrator can add, edit or remove reusable location sources. Enter a name, select an existing Home Assistant entity with `latitude`/`longitude` attributes (for example `sensor.example_standort`, a Companion App `device_tracker`, or a `person`), and select the vehicles allowed to use it. Alternatively leave the location entity empty and specify separate latitude/longitude sensors. Sources can be saved while temporarily unavailable; recording waits for a valid fix. The form previews the current coordinates and accuracy.
+In **Map → Tracking → Manage GPS sources**, an administrator can add, edit or remove reusable location sources. Enter a name, select an existing Home Assistant entity with `latitude`/`longitude` attributes (for example `sensor.matthias_standort`, a Companion App `device_tracker`, or a `person`), and select the vehicles allowed to use it. Alternatively leave the location entity empty and specify separate latitude/longitude sensors. Sources can be saved while temporarily unavailable; recording waits for a valid fix. The form previews the current coordinates and accuracy.
 
 For a trip, select the phone next to the vehicle and press **Start trip**. Recording runs in Home Assistant, without an open dashboard. Press **End trip** when you park. The last accepted point remains the vehicle's map position; later phone movements are ignored. The position is only as current as the phone's latest accepted update. Existing vehicle GPS can be explicitly restored after ending an external trip by enabling its **Record GPS tracking** checkbox.
 
@@ -873,3 +873,20 @@ Location data must be no older than 120 seconds; reported accuracy must be at mo
 Source definitions, allowed vehicles, sessions and the last accepted external position are stored centrally in an additive table in the existing tracking SQLite database. Active trips resume with incoming GPS updates after an HA restart. The daily ledger and other v0.1.67 storage mechanisms are unchanged. SoC, odometer and energy analytics continue to come from the vehicle, never from the phone.
 
 The map refreshes external vehicle positions approximately every 15 seconds while visible; historical trip selection/playback is preserved. The recorder import button continues to import the vehicle's configured native GPS history; external sources record only during manually started sessions and do not retrospectively import phone history.
+
+### Validation and first installation check
+
+Offline regression tests cover SQLite persistence, session restart, duplicate/exclusive source use, stale/invalid fixes, stopping, backend event callbacks, source boundaries, UI controls, map positions and the existing v0.1.67 features. Both the source tree and freshly extracted release ZIP are checked. These tests use Home Assistant and map adapters, not a running HA installation.
+
+After installing, restart Home Assistant and reload the frontend. For a short first trip, add your phone, start a Twingo session, check that the stored point count increases, end it, then verify that subsequent phone movement does not move the vehicle. Check **Bestand aktualisieren / Refresh stored data** to read committed database counts. Version 0.1.68 was withdrawn; this release uses the v0.1.67 baseline.
+
+
+## CarPlay automatic GPS and trip folders (v0.1.70)
+
+Under **Map → Tracking → Manage GPS sources**, choose a vehicle, an already assigned phone GPS source, the Companion App SSID sensor (for example `sensor.iphone_matprivat_ssid`) and the exact CarPlay network name (for example `BMWi39000 CarPlay`). Save the automation. The Home Assistant backend starts recording on connection, including when the map is closed. The SSID only triggers the trip; coordinates still come from the phone's location entity. Only one vehicle can use a phone GPS source at a time.
+
+A disconnect immediately pauses GPS recording. A reconnection within 90 seconds resumes the same trip; otherwise the session ends and the last recorded position stays parked. **End trip** also works for automatic sessions and prevents restarting until the phone first disconnects. Removing a running automation ends its automatic session. iOS controls the frequency of SSID and location updates; Cardata cannot recover points the phone never reports. Test the CarPlay sensor and location permissions on a short drive first.
+
+The **Folder / collection** selector filters the currently selected tracking date range and shows assigned tracks together on the map. Create nested folders, assign trips, select all trips shown in the current range, and move or delete the selection in one action. You may also delete an individual trip. A folder stores references to its trips; removing a folder leaves the GPS data untouched. Trip deletion permanently removes only that trip's GPS points, so export GPX before deleting if needed. If new Recorder points change a selected trip's boundaries, the delete/move request rejects the whole selection until the list is refreshed. Existing period-wide and all-point delete actions remain separate. Folder contents, mappings, session rules and GPS points are stored in the existing tracking SQLite database (new tables are additive); older databases are upgraded automatically.
+
+**Current trip consumption limitation:** GPS line length is an approximation and is not used as a substitute for vehicle mileage to compute energy consumption. Missing vehicle odometer history can still leave the selected-trip average unavailable; the previously proposed GPS fallback was not released.

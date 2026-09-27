@@ -33,6 +33,7 @@ from .const import (
 )
 from .trip_analytics import async_trip_analytics
 from .gps_sources import GPSSourcesMixin
+from .trip_folders import TripFoldersMixin
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -127,6 +128,7 @@ class Point:
     altitude: float | None = None
     accuracy: float | None = None
     source: str = "live"
+    db_id: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -143,7 +145,7 @@ class Point:
         }
 
 
-class TrackingManager(GPSSourcesMixin):
+class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
     """Own the local SQLite track store and vehicle GPS listeners."""
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -160,6 +162,7 @@ class TrackingManager(GPSSourcesMixin):
 
     async def async_setup(self) -> None:
         await self.hass.async_add_executor_job(self._init_db)
+        await self.hass.async_add_executor_job(self._init_trip_folders_db)
         await self._setup_sources()
         self._settings = await self.hass.async_add_executor_job(self._load_settings)
         self._cleanup_unsub = async_track_time_change(
@@ -225,6 +228,9 @@ class TrackingManager(GPSSourcesMixin):
     async def async_register_entry(self, entry: ConfigEntry) -> None:
         self._entries[entry.entry_id] = entry
         self._listen_source(entry.entry_id)
+        self._listen_auto(entry.entry_id)
+        if entry.entry_id in self._auto_rules:
+            self.hass.async_create_task(self._reconcile_auto(entry.entry_id))
         last = await self.hass.async_add_executor_job(self._last_point_db, entry.entry_id)
         if last is not None:
             self._last_points[entry.entry_id] = last
@@ -248,6 +254,10 @@ class TrackingManager(GPSSourcesMixin):
             self._schedule_sample(entry.entry_id, delay=0.2)
 
     async def async_unregister_entry(self, entry_id: str) -> None:
+        auto_unsub = self._auto_unsubs.pop(entry_id, None)
+        if auto_unsub:
+            auto_unsub()
+        self._cancel_auto_timer(entry_id)
         source_unsub = self._source_unsubs.pop(entry_id, None)
         if source_unsub:
             source_unsub()
@@ -406,6 +416,7 @@ class TrackingManager(GPSSourcesMixin):
             ts=float(row["ts"]), lat=float(row["lat"]), lon=float(row["lon"]),
             odometer=row["odometer"], soc=row["soc"], speed=row["speed"], bearing=row["bearing"],
             altitude=row["altitude"], accuracy=row["accuracy"], source=str(row["source"] or "live"),
+            db_id=int(row["id"]),
         )
 
     async def async_set_settings(self, entry_id: str, enabled: bool, retention_days: int) -> dict[str, Any]:
@@ -453,6 +464,7 @@ class TrackingManager(GPSSourcesMixin):
                 continue
             cutoff = dt_util.utcnow().timestamp() - days * 86400
             await self.hass.async_add_executor_job(self._delete_before_db, entry_id, cutoff)
+            await self.hass.async_add_executor_job(self._clean_trip_metadata_db, [entry_id])
 
     def _delete_before_db(self, entry_id: str, cutoff: float) -> None:
         with self._connect() as con:
@@ -510,7 +522,8 @@ class TrackingManager(GPSSourcesMixin):
                 }
             )
         vehicles.sort(key=lambda item: item["name"].casefold())
-        return {"vehicles": vehicles, "database": str(self.path.name), "sources": self._sources_status()}
+        folders = await self.hass.async_add_executor_job(self._folder_db)
+        return {"vehicles": vehicles, "database": str(self.path.name), "sources": self._sources_status(), "auto_rules": self._auto_rules, "folders": folders}
 
     def _points_db(self, entry_id: str, start_ts: float, end_ts: float, limit: int | None = None) -> list[Point]:
         sql = "SELECT * FROM track_points WHERE vehicle_id=? AND ts>=? AND ts<=? ORDER BY ts"
@@ -614,6 +627,7 @@ class TrackingManager(GPSSourcesMixin):
                 continue
             points = await self.hass.async_add_executor_job(self._points_db, entry_id, start_ts, end_ts, None)
             full_segments = self._split_segments(points)
+            metadata = await self.hass.async_add_executor_job(self._trip_metadata_db, entry_id, full_segments)
             trips = []
             total_distance = 0.0
             max_speed = 0.0
@@ -630,6 +644,7 @@ class TrackingManager(GPSSourcesMixin):
                 trips.append(
                     {
                         "index": idx,
+                        **(metadata[idx] or {}),
                         "start": _iso_utc(segment[0].ts),
                         "end": _iso_utc(segment[-1].ts),
                         "distance_km": round(dist_m / 1000.0, 3),
@@ -841,6 +856,7 @@ class TrackingManager(GPSSourcesMixin):
                     params.append(end_ts)
                 cur = con.execute("DELETE FROM track_points WHERE " + " AND ".join(clauses), params)
                 total += cur.rowcount
+        self._clean_trip_metadata_db(entry_ids)
         for entry_id in entry_ids:
             self._last_points.pop(entry_id, None)
         return total
@@ -1047,6 +1063,9 @@ async def websocket_gpx(hass: HomeAssistant, connection: websocket_api.ActiveCon
 
 
 def async_register_websocket(hass: HomeAssistant) -> None:
+    websocket_api.async_register_command(hass, websocket_trip_folders)
+    websocket_api.async_register_command(hass, websocket_batch_trips)
+    websocket_api.async_register_command(hass, websocket_delete_trip)
     websocket_api.async_register_command(hass, websocket_sources)
     websocket_api.async_register_command(hass, websocket_status)
     websocket_api.async_register_command(hass, websocket_settings)
@@ -1087,12 +1106,86 @@ async def websocket_sources(hass, connection, msg):
     if manager is None:
         connection.send_error(msg["id"], "not_ready", "Tracking is not ready")
         return
-    if msg["action"] in {"save", "delete"} and not connection.user.is_admin:
+    if msg["action"] in {"save", "delete", "auto_save", "auto_delete"} and not connection.user.is_admin:
         connection.send_error(msg["id"], "unauthorized", "Administrator required")
         return
     try:
         result = await manager.async_source_action(msg["action"], msg["data"])
     except (ValueError, KeyError, TypeError) as err:
         connection.send_error(msg["id"], "invalid_source", str(err))
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/tracking/folders", vol.Required("action"): str, vol.Optional("data", default={}): dict})
+@websocket_api.async_response
+async def websocket_trip_folders(hass, connection, msg):
+    manager = get_tracking_manager(hass)
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Tracking is not ready")
+        return
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Administrator required")
+        return
+    try:
+        result = await hass.async_add_executor_job(manager._folder_action_db, msg["action"], msg["data"])
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid_folder", str(err))
+        return
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/tracking/delete_trip", vol.Required("entry_id"): str, vol.Required("trip_id"): str, vol.Required("start"): str, vol.Required("end"): str})
+@websocket_api.async_response
+async def websocket_delete_trip(hass, connection, msg):
+    manager = get_tracking_manager(hass)
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Tracking is not ready")
+        return
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Administrator required")
+        return
+    try:
+        start, end = _validate_range(msg["start"], msg["end"])
+        entry_id = msg["entry_id"]
+        if entry_id not in manager._entries:
+            raise ValueError("Unknown vehicle")
+        session = manager._sessions.get(entry_id, {})
+        if session.get("active"):
+            raise ValueError("End the active GPS recording first")
+        deleted = await hass.async_add_executor_job(manager._delete_trip_db, entry_id, msg["trip_id"], start.timestamp(), end.timestamp())
+        manager._last_points.pop(entry_id, None)
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid_trip", str(err))
+        return
+    connection.send_result(msg["id"], {"deleted": deleted})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/tracking/batch_trips", vol.Required("action"): str, vol.Required("trips"): [dict], vol.Optional("folder_id"): str})
+@websocket_api.async_response
+async def websocket_batch_trips(hass, connection, msg):
+    manager = get_tracking_manager(hass)
+    if manager is None:
+        connection.send_error(msg["id"], "not_ready", "Tracking is not ready")
+        return
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Administrator required")
+        return
+    try:
+        trips = []
+        for item in msg["trips"]:
+            vehicle_id = item["entry_id"]
+            if vehicle_id not in manager._entries:
+                raise ValueError("Unknown vehicle")
+            if msg["action"] == "delete" and manager._sessions.get(vehicle_id, {}).get("active"):
+                raise ValueError("End the active GPS recording first")
+            start, end = _validate_range(item["start"], item["end"])
+            trips.append({"entry_id":vehicle_id,"trip_id":item["trip_id"],"start_ts":start.timestamp(),"end_ts":end.timestamp()})
+        result = await hass.async_add_executor_job(manager._batch_trip_action_db, msg["action"], trips, msg.get("folder_id"))
+        if msg["action"] == "delete":
+            for trip in trips:
+                manager._last_points.pop(trip["entry_id"], None)
+    except (ValueError, KeyError, TypeError) as err:
+        connection.send_error(msg["id"], "invalid_selection", str(err))
         return
     connection.send_result(msg["id"], result)
