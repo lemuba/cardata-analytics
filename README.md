@@ -6,7 +6,7 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.73\
+> **Current release:** v0.1.74\
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.73.js?v=0.1.73
+  - url: /cardata_analytics/cardata-analytics-card-0.1.74.js?v=0.1.74
     type: module
 ```
 
@@ -910,3 +910,9 @@ The date range must include all parts of a group to show it as one row. A range 
 For vehicles with native latitude and longitude sensors, the **Record GPS tracking** checkbox now reflects the saved recording setting even when a previously used phone GPS session is still listed. Once a phone session ends, enabled native GPS recording continues automatically; newer native positions also replace the parked phone position on the live map. Vehicles without enabled native tracking still stop recording when their phone session ends. New points are stored in the tracking SQLite database as they arrive; **Import Recorder** is only needed to recover older points from Home Assistant history.
 
 In live vehicle **Follow** mode, the map keeps the vehicle at its center while using the zoom buttons, mouse wheel or two-finger pinch. Pinching does not turn off Follow; deliberately dragging the map still releases Follow. Historical track playback camera modes are unaffected.
+
+## Adaptive iPhone GPS track points (v0.1.74)
+
+Under **Map → Tracking → Manage GPS sources → Automatic start by CarPlay SSID**, the optional iPhone location request interval remains selectable at **Off, 10, 20, 30, 60, 120, 300 or 600 seconds**. A separate **Filter track points** setting offers **Off**, **Detailed**, **Balanced** and **Compact**. It filters actual incoming phone fixes, not the iPhone request schedule. Existing automatic rules with location requests enabled default to Balanced; rules without a request interval retain their earlier behavior until you choose a filter. Manual phone recording and native vehicle GPS are unchanged.
+
+The phone filter keeps the start, significant turns and periodically spaced fixes on long straight sections while ignoring stationary GPS jitter. A single candidate fix is held in a persistent, bounded buffer and the last useful fix is written to the track database when the trip ends or the integration reloads. The live vehicle marker still uses the latest accepted phone fix. During an active recording, the track point counter may lag behind the most recent position until that pending fix is committed. The filter stores no invented coordinates and cannot recover locations the iPhone never supplied. Home Assistant Recorder imports of native vehicle GPS data are unaffected. Use **Detailed** for narrow turns, **Balanced** for regular trips, **Compact** for fewer saved points or **Off** to retain the old recording behavior. Test a short route and its final point after changing the setting.

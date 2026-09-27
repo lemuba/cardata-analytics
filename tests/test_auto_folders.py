@@ -97,13 +97,15 @@ class AutoFoldersTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('i3', self.manager._location_poll_tasks)
         self.assertEqual(len(calls),2)
         self.hass.states['sensor.phone'] = state('home',NOW+timedelta(seconds=5),latitude=54.001,longitude=9,gps_accuracy=5)
-        self.assertTrue(await self.manager.async_record_current('i3'))
+        self.assertFalse(await self.manager.async_record_current('i3'))
+        self.assertIsNotNone(self.manager._sessions['i3'].get('pending_point'))
         self.assertNotIn('final_until', self.manager._sessions['i3'])
         self.assertFalse(await self.manager.async_record_current('i3'))
         self.hass.states['sensor.phone'] = state('walking',NOW+timedelta(seconds=6),latitude=54.002,longitude=9,gps_accuracy=5)
         self.assertFalse(await self.manager.async_record_current('i3'))
-        self.assertEqual(self.manager._status_db(['i3'])['i3']['point_count'],2)
+        self.assertEqual(self.manager._status_db(['i3'])['i3']['point_count'],1)
         await self.manager.async_source_action('stop',{'entry_id':'i3'})
+        self.assertEqual(self.manager._status_db(['i3'])['i3']['point_count'],2)
         self.assertNotIn('i3', self.manager._final_fix_tasks)
 
     async def test_location_request_validation_and_old_rules_default_off(self):

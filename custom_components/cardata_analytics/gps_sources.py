@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 LOCATION_INTERVALS = {0, 10, 20, 30, 60, 120, 300, 600}
+POINT_FILTERS = {"off", "detailed", "balanced", "compact"}
 
 
 class GPSSourcesMixin:
@@ -87,6 +88,10 @@ class GPSSourcesMixin:
 
     async def async_source_action(self, action, data):
         async with self._source_lock:
+            entry_id = data.get("entry_id")
+            if (action in {"stop", "auto_delete"} or
+                    action == "start" and not self._sessions.get(entry_id, {}).get("active")):
+                await self._flush_phone_pending(entry_id)
             old = json.dumps({"sources": self._sources, "sessions": self._sessions, "auto_rules": self._auto_rules})
             try:
                 result = self._source_action(action, data)
@@ -132,6 +137,9 @@ class GPSSourcesMixin:
                 raise ValueError("Select a supported location request interval") from None
             if interval not in LOCATION_INTERVALS:
                 raise ValueError("Select a supported location request interval")
+            point_filter = data.get("point_filter", "balanced" if interval else "off")
+            if point_filter not in POINT_FILTERS:
+                raise ValueError("Select a supported GPS point filter")
             if interval:
                 if not notify_service.startswith("notify.mobile_app_") or not self.hass.services.has_service("notify", notify_service.split(".", 1)[1]):
                     raise ValueError("Select the iPhone's existing mobile app notification action")
@@ -146,7 +154,8 @@ class GPSSourcesMixin:
             if self._sessions.get(entry_id, {}).get("active") and self._sessions[entry_id].get("mode") == "auto":
                 raise ValueError("End the active automatic trip before changing its rule")
             self._auto_rules[entry_id] = {"source_id": source_id, "ssid_entity": sensor, "ssid": ssid, "blocked": False,
-                                          "notify_service": notify_service, "location_interval": interval}
+                                          "notify_service": notify_service, "location_interval": interval,
+                                          "point_filter": point_filter}
             return {}
         if action == "auto_delete":
             entry_id = data.get("entry_id")

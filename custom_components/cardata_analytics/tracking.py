@@ -44,6 +44,13 @@ TRACK_MIN_INTERVAL_SECONDS = 5.0
 TRACK_HEARTBEAT_SECONDS = 30 * 60.0
 TRACK_SEGMENT_GAP_SECONDS = 15 * 60.0
 TRACK_MAX_SPEED_KMH = 320.0
+# Maximum shape error, maximum time between saved moving fixes, maximum
+# distance between saved fixes, and the stationary GPS-noise radius.
+PHONE_POINT_FILTERS = {
+    "detailed": (8.0, 40.0, 140.0, 12.0),
+    "balanced": (15.0, 75.0, 220.0, 18.0),
+    "compact": (25.0, 120.0, 350.0, 25.0),
+}
 DEFAULT_RETENTION_DAYS = 365
 ALLOWED_RETENTION_DAYS = {0, 30, 90, 180, 365}
 MAX_QUERY_DAYS = 3660
@@ -111,6 +118,19 @@ def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     y = math.sin(dlambda) * math.cos(phi2)
     x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlambda)
     return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+def _shape_error_m(start: Point, middle: Point, end: Point) -> float:
+    """Distance from a buffered fix to the finite start/end line segment."""
+    latitude = math.radians((start.lat + middle.lat + end.lat) / 3)
+    scale = 111195.0
+    mx = (middle.lon - start.lon) * math.cos(latitude) * scale
+    my = (middle.lat - start.lat) * scale
+    ex = (end.lon - start.lon) * math.cos(latitude) * scale
+    ey = (end.lat - start.lat) * scale
+    squared = ex * ex + ey * ey
+    fraction = max(0.0, min(1.0, (mx * ex + my * ey) / squared)) if squared else 0.0
+    return math.hypot(mx - fraction * ex, my - fraction * ey)
 
 
 def _iso_utc(ts: float) -> str:
@@ -262,6 +282,8 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
             self._schedule_sample(entry.entry_id, delay=0.2)
 
     async def async_unregister_entry(self, entry_id: str) -> None:
+        async with self._source_lock:
+            await self._flush_phone_pending(entry_id)
         auto_unsub = self._auto_unsubs.pop(entry_id, None)
         if auto_unsub:
             auto_unsub()
@@ -372,6 +394,107 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                 point.bearing = _bearing_deg(previous.lat, previous.lon, point.lat, point.lon)
         return True, point
 
+    def _phone_filter(self, entry_id: str, session: dict[str, Any]) -> str:
+        if session.get("mode") != "auto":
+            return "off"
+        rule = self._auto_rules.get(entry_id, {})
+        if rule.get("source_id") != session.get("source_id"):
+            return "off"
+        mode = rule.get("point_filter", "balanced" if rule.get("location_interval") else "off")
+        return mode if mode in PHONE_POINT_FILTERS else "off"
+
+    @staticmethod
+    def _pending_phone_point(session: dict[str, Any]) -> Point | None:
+        raw = session.get("pending_point")
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return Point(**{**raw, "ts": _parse_ts(raw["ts"]).timestamp()})
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    async def _store_phone_point(self, entry_id: str, entry: ConfigEntry, point: Point) -> bool:
+        accepted, point = self._accept_candidate(self._last_points.get(entry_id), point)
+        if not accepted:
+            return False
+        inserted = await self.hass.async_add_executor_job(self._insert_point_db, entry_id, entry.title, point)
+        if inserted:
+            self._last_points[entry_id] = point
+        return inserted
+
+    async def _flush_phone_pending(self, entry_id: str | None) -> bool:
+        session = self._sessions.get(entry_id, {})
+        pending = self._pending_phone_point(session)
+        entry = self._entries.get(entry_id)
+        if not pending or not entry:
+            return False
+        mode = self._phone_filter(entry_id, session)
+        radius = PHONE_POINT_FILTERS.get(mode, PHONE_POINT_FILTERS["balanced"])[3]
+        anchor = self._last_points.get(entry_id)
+        moved = not anchor or anchor.source != pending.source or (
+            _haversine_m(anchor.lat, anchor.lon, pending.lat, pending.lon) >=
+            max(radius, (pending.accuracy or 0) * 1.5, (anchor.accuracy or 0) * 1.5))
+        inserted = await self._store_phone_point(entry_id, entry, pending) if moved else False
+        session.pop("pending_point", None)
+        await self._persist_sources()
+        return inserted
+
+    async def _record_filtered_phone_point(self, entry_id: str, entry: ConfigEntry,
+                                           session: dict[str, Any], point: Point, mode: str) -> bool:
+        tolerance, max_seconds, max_meters, stationary_radius = PHONE_POINT_FILTERS[mode]
+        anchor = self._last_points.get(entry_id)
+        pending = self._pending_phone_point(session)
+        new_segment = bool(anchor and point.ts - (pending.ts if pending else anchor.ts) > TRACK_SEGMENT_GAP_SECONDS)
+        if pending and (point.source != pending.source or point.ts - pending.ts > TRACK_SEGMENT_GAP_SECONDS):
+            await self._flush_phone_pending(entry_id)
+            anchor = self._last_points.get(entry_id)
+            pending = None
+        if pending and point.ts <= pending.ts or anchor and point.ts <= anchor.ts:
+            return False
+        reference = pending or anchor
+        accepted, _ = self._accept_candidate(reference, point)
+        if not accepted:
+            if pending and point.ts > pending.ts and _haversine_m(pending.lat, pending.lon, point.lat, point.lon) < TRACK_MIN_MOVE_METERS:
+                distance_from_anchor = _haversine_m(anchor.lat, anchor.lon, pending.lat, pending.lon) if anchor else 0
+                if distance_from_anchor < stationary_radius or point.ts - pending.ts >= 30:
+                    # Refresh the parked endpoint, but retain a moving corner
+                    # until there is enough separation to judge its shape.
+                    session["pending_point"] = point.as_dict()
+                    session["last_fix"] = point.as_dict()
+                    await self._persist_sources()
+            return False
+        if session.get("suspended"):
+            # The first usable post-disconnect fix closes the one-fix window,
+            # even if its database write is delayed until the session ends.
+            session.pop("final_until", None)
+        if new_segment or not anchor or point.source != anchor.source:
+            inserted = await self._store_phone_point(entry_id, entry, point)
+            if inserted:
+                session["last_fix"] = point.as_dict()
+                await self._persist_sources()
+            return inserted
+        if pending:
+            radius = max(stationary_radius, 1.5 * (point.accuracy or 0), 1.5 * (pending.accuracy or 0))
+            pending_distance = _haversine_m(anchor.lat, anchor.lon, pending.lat, pending.lon)
+            current_distance = _haversine_m(anchor.lat, anchor.lon, point.lat, point.lon)
+            turn = (_shape_error_m(anchor, pending, point) >= max(tolerance, radius)
+                    and pending_distance >= radius)
+            checkpoint = point.ts - anchor.ts >= max_seconds or current_distance >= max_meters
+            if pending_distance >= radius and (turn or checkpoint) and (current_distance > radius or pending_distance >= radius * 2):
+                await self._store_phone_point(entry_id, entry, pending)
+                anchor = self._last_points.get(entry_id)
+            elif checkpoint and current_distance >= radius:
+                inserted = await self._store_phone_point(entry_id, entry, point)
+                if inserted:
+                    session.pop("pending_point", None)
+                    session["last_fix"] = point.as_dict()
+                    await self._persist_sources()
+                    return True
+        session["pending_point"] = point.as_dict()
+        session["last_fix"] = point.as_dict()
+        await self._persist_sources()
+        return False
+
     async def async_record_current(self, entry_id: str) -> bool:
         async with self._source_lock:
             entry = self._entries.get(entry_id)
@@ -388,6 +511,9 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                 return False
             if point is None:
                 return False
+            point_filter = self._phone_filter(entry_id, session) if session.get("active") else "off"
+            if point_filter != "off":
+                return await self._record_filtered_phone_point(entry_id, entry, session, point, point_filter)
             accepted, point = self._accept_candidate(self._last_points.get(entry_id), point)
             if not accepted:
                 return False
@@ -437,6 +563,7 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
             async with self._source_lock:
                 if self._sessions.get(entry_id, {}).get("active"):
                     raise ValueError("End the external GPS trip first")
+                await self._flush_phone_pending(entry_id)
                 previous_session = self._sessions.pop(entry_id, None)
                 try:
                     await self._persist_sources()
@@ -906,12 +1033,20 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
             return con.total_changes - before
 
     async def async_delete(self, entry_ids: list[str], start: datetime | None, end: datetime | None) -> int:
-        return await self.hass.async_add_executor_job(
-            self._delete_db,
-            entry_ids,
-            start.timestamp() if start else None,
-            end.timestamp() if end else None,
-        )
+        start_ts = start.timestamp() if start else None
+        end_ts = end.timestamp() if end else None
+        async with self._source_lock:
+            deleted = await self.hass.async_add_executor_job(self._delete_db, entry_ids, start_ts, end_ts)
+            changed = False
+            for entry_id in entry_ids:
+                session = self._sessions.get(entry_id, {})
+                pending = self._pending_phone_point(session)
+                if pending and (start_ts is None or pending.ts >= start_ts) and (end_ts is None or pending.ts <= end_ts):
+                    session.pop("pending_point", None)
+                    changed = True
+            if changed:
+                await self._persist_sources()
+            return deleted
 
     def _delete_db(self, entry_ids: list[str], start_ts: float | None, end_ts: float | None) -> int:
         total = 0

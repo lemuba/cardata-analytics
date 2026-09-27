@@ -444,12 +444,18 @@ async function test(name, fn){await fn();checks++;console.log('PASS',name);}
     assert.match(panel.innerHTML,/10 s.*Testmodus/);
     panel.querySelector('[data-auto-notify="one"]').value='notify.mobile_app_iphone_matprivat';
     panel.querySelector('[data-auto-interval="one"]').value='10';
+    panel.querySelector('[data-auto-point-filter="one"]').value='detailed';
     let sent;c._hass.callWS=async req=>{sent=req;return {};};c._loadTrackingStatus=async()=>{};
     await panel.querySelector('[data-auto-save="one"]').click();
     assert.equal(sent.action,'auto_save');assert.equal(sent.data.ssid,'BMWi39000 CarPlay');
     assert.equal(sent.data.ssid_entity,'sensor.iphone_matprivat_ssid');
     assert.equal(sent.data.notify_service,'notify.mobile_app_iphone_matprivat');
     assert.equal(sent.data.location_interval,10);
+    assert.equal(sent.data.point_filter,'detailed');
+    c._trackingStatus.auto_rules.one.point_filter='compact';
+    c._trackingStatus.auto_rules.one.location_interval=10;c._renderTrackingPanel();
+    assert.match(panel.innerHTML,/value="compact" selected/);
+    assert.match(panel.innerHTML,/value="10" selected/);
   });
   await test('folder selection displays only assigned historical trips and preserves other views',async()=>{
     const {c,panel,sources,data}=fixture();c._hass.user={is_admin:true};
