@@ -73,6 +73,14 @@ def _valid_coordinate(value: Any, *, latitude: bool) -> float | None:
     return number
 
 
+def _parse_trip_members(members: list[dict]) -> list[dict]:
+    parsed = []
+    for member in members:
+        start, end = _validate_range(member["start"], member["end"])
+        parsed.append({"id": member["id"], "start_ts": start.timestamp(), "end_ts": end.timestamp()})
+    return parsed
+
+
 def _state_number(hass: HomeAssistant, entity_id: str | None) -> float | None:
     if not entity_id:
         return None
@@ -622,6 +630,43 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                 out.append(thinned)
         return out
 
+    @staticmethod
+    def _group_trips(trips: list[dict[str, Any]], group_by_trip: dict[str, str], group_sizes: dict[str, int]) -> list[dict[str, Any]]:
+        """Show a saved collection as one trip without joining its GPS segments."""
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for trip in trips:
+            group_id = group_by_trip.get(trip.get("id"))
+            if group_id:
+                grouped.setdefault(group_id, []).append(trip)
+        result = []
+        emitted = set()
+        for trip in trips:
+            group_id = group_by_trip.get(trip.get("id"))
+            members = grouped.get(group_id, []) if group_id else []
+            if len(members) < 2 or len(members) != group_sizes.get(group_id):
+                result.append(trip)
+                continue
+            if group_id in emitted:
+                continue
+            emitted.add(group_id)
+            members = sorted(members, key=lambda item: item["start"])
+            distance = sum(item["distance_km"] for item in members)
+            duration = sum(item["duration_seconds"] for item in members)
+            result.append({
+                "id": group_id, "index": members[0]["index"],
+                "indices": [item["index"] for item in members],
+                "members": [{"id": item["id"], "index": item["index"], "start": item["start"], "end": item["end"]} for item in members],
+                "folders": sorted({folder for item in members for folder in item.get("folders", [])}),
+                "start": members[0]["start"], "end": members[-1]["end"],
+                "distance_km": round(distance, 3),
+                "point_count": sum(item["point_count"] for item in members),
+                "start_soc": members[0]["start_soc"], "end_soc": members[-1]["end_soc"],
+                "duration_seconds": duration,
+                "avg_speed_kmh": round(distance / duration * 3600, 2) if duration else 0.0,
+                "max_speed_kmh": max(item["max_speed_kmh"] for item in members),
+            })
+        return result
+
     async def async_query(self, entry_ids: list[str], start: datetime, end: datetime, max_points: int) -> dict[str, Any]:
         start_ts, end_ts = start.timestamp(), end.timestamp()
         vehicles: list[dict[str, Any]] = []
@@ -662,6 +707,8 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                         "max_speed_kmh": round(trip_max_speed, 2),
                     }
                 )
+            group_by_trip, group_sizes = await self.hass.async_add_executor_job(self._trip_groups_db, entry_id)
+            trips = self._group_trips(trips, group_by_trip, group_sizes)
             segments = self._simplify_segments(full_segments, per_vehicle)
             rendered_points = sum(len(s) for s in segments)
             duration = sum(max(0.0, s[-1].ts - s[0].ts) for s in full_segments if len(s) >= 2)
@@ -682,11 +729,30 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
             )
         return {"start": start.isoformat(), "end": end.isoformat(), "vehicles": vehicles}
 
-    async def async_trip_details(self, entry_id: str, start: datetime, end: datetime) -> dict[str, Any]:
+    async def async_trip_details(self, entry_id: str, start: datetime, end: datetime,
+                                 group_id: str | None = None, members: list[dict] | None = None) -> dict[str, Any]:
         """Read Analytics only on explicit trip selection, independently of GPS recording."""
         entry = self._entries.get(entry_id)
         if entry is None:
             raise ValueError("Unknown vehicle")
+        if group_id:
+            ranges = await self.hass.async_add_executor_job(self._validated_group_ranges, entry_id, group_id, members or [])
+            ordered = sorted((member for member, _ in ranges), key=lambda item: item["start_ts"])
+            if abs(ordered[0]["start_ts"] - start.timestamp()) > .001 or abs(ordered[-1]["end_ts"] - end.timestamp()) > .001:
+                raise ValueError("Merged trip has changed; refresh the list")
+            details = [await async_trip_analytics(
+                self.hass, entry,
+                datetime.fromtimestamp(member["start_ts"], timezone.utc),
+                datetime.fromtimestamp(member["end_ts"], timezone.utc),
+            ) for member in ordered]
+            energy_status = next((item["energy_status"] for item in details if item["energy_status"] != "available"), "available")
+            distance_status = next((item["distance_status"] for item in details if item["distance_status"] != "available"), "available")
+            energy = round(sum(item["energy_kwh"] for item in details), 4) if energy_status == "available" else None
+            distance = round(sum(item["analytics_distance_km"] for item in details), 4) if distance_status == "available" else None
+            return {"energy_kwh": energy, "analytics_distance_km": distance,
+                    "average_kwh_100km": round(energy / distance * 100, 2) if energy is not None and distance is not None and distance > 0 else None,
+                    "energy_status": energy_status, "distance_status": distance_status,
+                    "energy_source": "analytics_history", "start": start.isoformat(), "end": end.isoformat()}
         points = await self.hass.async_add_executor_job(
             self._points_db, entry_id, start.timestamp(), end.timestamp(), None
         )
@@ -867,7 +933,8 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
             self._last_points.pop(entry_id, None)
         return total
 
-    async def async_gpx(self, entry_id: str, start: datetime, end: datetime, trip_index: int | None = None) -> dict[str, str]:
+    async def async_gpx(self, entry_id: str, start: datetime, end: datetime, trip_index: int | None = None,
+                        group_id: str | None = None, members: list[dict] | None = None) -> dict[str, str]:
         entry = self._entries.get(entry_id)
         if entry is None:
             raise ValueError("Unknown vehicle")
@@ -877,7 +944,13 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
         if len(points) > MAX_GPX_POINTS:
             raise ValueError("Too many points for one GPX export")
         segments = self._split_segments(points)
-        if trip_index is not None:
+        if group_id:
+            ranges = await self.hass.async_add_executor_job(self._validated_group_ranges, entry_id, group_id, members or [])
+            selected_ids = {point_id for _, ids in ranges for point_id in ids}
+            segments = [segment for segment in segments if segment and segment[0].db_id in selected_ids]
+            if len(segments) != len(ranges):
+                raise ValueError("Merged trip has changed; refresh the list")
+        elif trip_index is not None:
             if trip_index < 0 or trip_index >= len(segments):
                 raise ValueError("Unknown trip index")
             segments = [segments[trip_index]]
@@ -911,7 +984,7 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                 lines.append("      </trkpt>")
             lines.append("    </trkseg>")
         lines += ["  </trk>", "</gpx>"]
-        suffix = f"_trip_{trip_index + 1}" if trip_index is not None else ""
+        suffix = "_merged" if group_id else f"_trip_{trip_index + 1}" if trip_index is not None else ""
         return {"filename": f"Cardata_{safe}_{start_tag}_to_{end_tag}{suffix}.gpx", "content": "\n".join(lines)}
 
 
@@ -1051,6 +1124,8 @@ async def websocket_delete(hass: HomeAssistant, connection: websocket_api.Active
         vol.Required("start"): str,
         vol.Required("end"): str,
         vol.Optional("trip_index"): vol.Coerce(int),
+        vol.Optional("group_id"): str,
+        vol.Optional("members"): [dict],
     }
 )
 @websocket_api.async_response
@@ -1061,8 +1136,9 @@ async def websocket_gpx(hass: HomeAssistant, connection: websocket_api.ActiveCon
         return
     try:
         start, end = _validate_range(msg["start"], msg["end"])
-        result = await manager.async_gpx(msg["entry_id"], start, end, msg.get("trip_index"))
-    except ValueError as err:
+        members = _parse_trip_members(msg.get("members", []))
+        result = await manager.async_gpx(msg["entry_id"], start, end, msg.get("trip_index"), msg.get("group_id"), members)
+    except (ValueError, KeyError, TypeError) as err:
         connection.send_error(msg["id"], "gpx_failed", str(err))
         return
     connection.send_result(msg["id"], result)
@@ -1084,7 +1160,8 @@ def async_register_websocket(hass: HomeAssistant) -> None:
 
 @websocket_api.websocket_command(
     {vol.Required("type"): WS_TRIP_DETAILS, vol.Required("entry_id"): str,
-     vol.Required("start"): str, vol.Required("end"): str}
+     vol.Required("start"): str, vol.Required("end"): str,
+     vol.Optional("group_id"): str, vol.Optional("members"): [dict]}
 )
 @websocket_api.async_response
 async def websocket_trip_details(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
@@ -1094,8 +1171,8 @@ async def websocket_trip_details(hass: HomeAssistant, connection: websocket_api.
         return
     try:
         start, end = _validate_range(msg["start"], msg["end"])
-        result = await manager.async_trip_details(msg["entry_id"], start, end)
-    except ValueError as err:
+        result = await manager.async_trip_details(msg["entry_id"], start, end, msg.get("group_id"), _parse_trip_members(msg.get("members", [])))
+    except (ValueError, KeyError, TypeError) as err:
         connection.send_error(msg["id"], "invalid_trip", str(err))
         return
     except Exception:
@@ -1167,7 +1244,7 @@ async def websocket_delete_trip(hass, connection, msg):
     connection.send_result(msg["id"], {"deleted": deleted})
 
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/tracking/batch_trips", vol.Required("action"): str, vol.Required("trips"): [dict], vol.Optional("folder_id"): str})
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/tracking/batch_trips", vol.Required("action"): str, vol.Required("trips"): [dict], vol.Optional("folder_id"): str, vol.Optional("group_id"): str, vol.Optional("entry_id"): str})
 @websocket_api.async_response
 async def websocket_batch_trips(hass, connection, msg):
     manager = get_tracking_manager(hass)
@@ -1178,12 +1255,18 @@ async def websocket_batch_trips(hass, connection, msg):
         connection.send_error(msg["id"], "unauthorized", "Administrator required")
         return
     try:
+        if msg["action"] == "unmerge":
+            if msg.get("trips") or msg.get("entry_id") not in manager._entries:
+                raise ValueError("Select a merged trip from one vehicle")
+            result = await hass.async_add_executor_job(manager._unmerge_trip_db, msg["entry_id"], msg.get("group_id"))
+            connection.send_result(msg["id"], result)
+            return
         trips = []
         for item in msg["trips"]:
             vehicle_id = item["entry_id"]
             if vehicle_id not in manager._entries:
                 raise ValueError("Unknown vehicle")
-            if msg["action"] == "delete" and manager._sessions.get(vehicle_id, {}).get("active"):
+            if msg["action"] in {"delete", "merge"} and manager._sessions.get(vehicle_id, {}).get("active"):
                 raise ValueError("End the active GPS recording first")
             start, end = _validate_range(item["start"], item["end"])
             trips.append({"entry_id":vehicle_id,"trip_id":item["trip_id"],"start_ts":start.timestamp(),"end_ts":end.timestamp()})

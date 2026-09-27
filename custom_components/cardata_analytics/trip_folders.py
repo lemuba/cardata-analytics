@@ -19,7 +19,47 @@ class TripFoldersMixin:
                     trip_id TEXT NOT NULL REFERENCES trip_identity(id) ON DELETE CASCADE,
                     PRIMARY KEY(folder_id, trip_id)
                 );
+                CREATE TABLE IF NOT EXISTS trip_groups (
+                    id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS trip_group_members (
+                    group_id TEXT NOT NULL REFERENCES trip_groups(id) ON DELETE CASCADE,
+                    trip_id TEXT NOT NULL UNIQUE REFERENCES trip_identity(id) ON DELETE CASCADE,
+                    PRIMARY KEY(group_id, trip_id)
+                );
             """)
+
+    def _trip_groups_db(self, entry_id):
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT m.trip_id, m.group_id FROM trip_group_members m JOIN trip_groups g ON g.id=m.group_id WHERE g.vehicle_id=?",
+                (entry_id,)).fetchall()
+            counts = {}
+            for row in rows:
+                counts[row["group_id"]] = counts.get(row["group_id"], 0) + 1
+            return {row["trip_id"]: row["group_id"] for row in rows}, counts
+
+    @staticmethod
+    def _clean_empty_groups(con):
+        con.execute("DELETE FROM trip_groups WHERE id IN (SELECT g.id FROM trip_groups g LEFT JOIN trip_group_members m ON m.group_id=g.id GROUP BY g.id HAVING COUNT(m.trip_id)<2)")
+
+    def _unmerge_trip_db(self, vehicle_id, group_id):
+        with self._connect() as con:
+            con.execute("PRAGMA foreign_keys=ON")
+            if not con.execute("DELETE FROM trip_groups WHERE id=? AND vehicle_id=?", (group_id, vehicle_id)).rowcount:
+                raise ValueError("Unknown merged trip")
+        return {"trips": 1}
+
+    def _validated_group_ranges(self, vehicle_id, group_id, members):
+        if not group_id or not 2 <= len(members) <= 300:
+            raise ValueError("Select a complete merged trip")
+        with self._connect() as con:
+            ids = {r[0] for r in con.execute(
+                "SELECT m.trip_id FROM trip_group_members m JOIN trip_groups g ON g.id=m.group_id WHERE g.id=? AND g.vehicle_id=?",
+                (group_id, vehicle_id))}
+            if ids != {m["id"] for m in members} or len(ids) != len(members):
+                raise ValueError("Merged trip has changed; refresh the list")
+            return [(m, self._validated_trip_ids(con, vehicle_id, m["id"], m["start_ts"], m["end_ts"])) for m in members]
 
     def _folder_db(self):
         with self._connect() as con:
@@ -113,7 +153,7 @@ class TripFoldersMixin:
         return [p.db_id for p in points]
 
     def _batch_trip_action_db(self, action, trips, folder_id=None):
-        if action not in {"delete", "move"} or not 1 <= len(trips) <= 300:
+        if action not in {"delete", "move", "merge"} or not 1 <= len(trips) <= 300 or (action == "merge" and len(trips) < 2):
             raise ValueError("Select between 1 and 300 trips")
         keys = [(t["entry_id"],t["trip_id"]) for t in trips]
         if len(keys) != len(set(keys)):
@@ -127,6 +167,26 @@ class TripFoldersMixin:
             for t in trips:
                 vehicle_id, trip_id = t["entry_id"], t["trip_id"]
                 validated.append((vehicle_id,trip_id,self._validated_trip_ids(con,vehicle_id,trip_id,t["start_ts"],t["end_ts"])))
+            if action == "merge":
+                if len({vehicle_id for vehicle_id, _, _ in validated}) != 1:
+                    raise ValueError("Only trips from the same vehicle can be merged")
+                placeholders = ",".join("?" for _ in validated)
+                selected_ids = [trip_id for _, trip_id, _ in validated]
+                existing = [r[0] for r in con.execute(
+                    f"SELECT DISTINCT group_id FROM trip_group_members WHERE trip_id IN ({placeholders})", selected_ids)]
+                for group_id in existing:
+                    group_members = {r[0] for r in con.execute("SELECT trip_id FROM trip_group_members WHERE group_id=?", (group_id,))}
+                    if not group_members.issubset(selected_ids):
+                        raise ValueError("Select all parts of an existing merged trip")
+                group_id = existing[0] if existing else uuid4().hex
+                for old_id in existing:
+                    con.execute("DELETE FROM trip_group_members WHERE group_id=?", (old_id,))
+                    if old_id != group_id:
+                        con.execute("DELETE FROM trip_groups WHERE id=?", (old_id,))
+                if not existing:
+                    con.execute("INSERT INTO trip_groups VALUES (?,?)", (group_id, validated[0][0]))
+                con.executemany("INSERT INTO trip_group_members VALUES (?,?)", ((group_id, trip_id) for trip_id in selected_ids))
+                return {"trips":len(validated), "group_id":group_id}
             if action == "delete":
                 for vehicle_id, trip_id, point_ids in validated:
                     for offset in range(0,len(point_ids),500):
@@ -134,6 +194,7 @@ class TripFoldersMixin:
                         con.execute(f"DELETE FROM track_points WHERE vehicle_id=? AND id IN ({','.join('?' for _ in batch)})", (vehicle_id,*batch))
                     con.execute("DELETE FROM trip_membership WHERE trip_id=?",(trip_id,))
                     con.execute("DELETE FROM trip_identity WHERE id=?",(trip_id,))
+                self._clean_empty_groups(con)
             else:
                 for _, trip_id, _ in validated:
                     con.execute("DELETE FROM trip_membership WHERE trip_id=?",(trip_id,))
@@ -153,3 +214,4 @@ class TripFoldersMixin:
                 for trip_id in ids:
                     con.execute("DELETE FROM trip_membership WHERE trip_id=?", (trip_id,))
                     con.execute("DELETE FROM trip_identity WHERE id=?", (trip_id,))
+            self._clean_empty_groups(con)

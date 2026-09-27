@@ -166,6 +166,106 @@ class AutoFoldersTests(unittest.IsolatedAsyncioTestCase):
         self.manager._folder_action_db('delete',{'folder_id':child})
         self.assertEqual(self.manager._status_db(['i3'])['i3']['point_count'],3)
 
+    async def test_merge_keeps_segments_and_survives_restart_and_unmerge(self):
+        first = self.insert_trips()
+        start, end = first - timedelta(seconds=1), NOW
+        before = await self.manager.async_query(['i3'], start, end, 500)
+        trips = before['vehicles'][0]['trips']
+        self.assertEqual(len(trips), 2)
+        selected = [{'entry_id':'i3','trip_id':t['id'], 'start_ts':tracking._parse_ts(t['start']).timestamp(),
+                     'end_ts':tracking._parse_ts(t['end']).timestamp()} for t in trips]
+        merged = self.manager._batch_trip_action_db('merge', selected)
+        group_id = merged['group_id']
+        grouped = (await self.manager.async_query(['i3'],start,end,500))['vehicles'][0]
+        self.assertEqual(grouped['trip_count'], 1)
+        self.assertEqual(len(grouped['segments']),2)
+        self.assertEqual(grouped['trips'][0]['id'],group_id)
+        self.assertEqual(grouped['trips'][0]['point_count'],4)
+        self.assertEqual(grouped['trips'][0]['indices'],[0,1])
+        self.assertEqual(grouped['trips'][0]['duration_seconds'],240)
+        self.assertEqual(grouped['trips'][0]['distance_km'],round(sum(t['distance_km'] for t in trips),3))
+        partial=(await self.manager.async_query(['i3'],start,tracking._parse_ts(trips[0]['end']),500))['vehicles'][0]
+        self.assertEqual(partial['trips'][0]['id'],trips[0]['id'])
+        members = [{'id':t['id'],'start_ts':tracking._parse_ts(t['start']).timestamp(),
+                    'end_ts':tracking._parse_ts(t['end']).timestamp()} for t in trips]
+        gpx = await self.manager.async_gpx('i3',tracking._parse_ts(trips[0]['start']),tracking._parse_ts(trips[-1]['end']),
+                                           group_id=group_id,members=members)
+        self.assertEqual(gpx['content'].count('<trkseg>'),2)
+        self.assertEqual(gpx['content'].count('<trkpt '),4)
+        counters=[{'energy_kwh':2.0,'analytics_distance_km':10.0,'energy_status':'available','distance_status':'available'},
+                  {'energy_kwh':3.0,'analytics_distance_km':15.0,'energy_status':'available','distance_status':'available'}]
+        with patch('cardata_under_test.tracking.async_trip_analytics',new=AsyncMock(side_effect=counters)):
+            detail=await self.manager.async_trip_details('i3',tracking._parse_ts(trips[0]['start']),
+                tracking._parse_ts(trips[-1]['end']),group_id,members)
+        self.assertEqual((detail['energy_kwh'],detail['analytics_distance_km'],detail['average_kwh_100km']),(5.0,25.0,20.0))
+        bad=[dict(counters[0]),{**counters[1],'energy_kwh':None,'energy_status':'history_gap'}]
+        with patch('cardata_under_test.tracking.async_trip_analytics',new=AsyncMock(side_effect=bad)):
+            detail=await self.manager.async_trip_details('i3',tracking._parse_ts(trips[0]['start']),
+                tracking._parse_ts(trips[-1]['end']),group_id,members)
+        self.assertEqual(detail['energy_status'],'history_gap')
+        self.assertIsNone(detail['average_kwh_100km'])
+        other=tracking.TrackingManager(self.hass)
+        await other.async_setup()
+        await other.async_register_entry(self.manager._entries['i3'])
+        try:
+            self.assertEqual((await other.async_query(['i3'],start,end,500))['vehicles'][0]['trips'][0]['id'],group_id)
+        finally:
+            await other.async_unregister_entry('i3')
+        self.manager._unmerge_trip_db('i3',group_id)
+        self.assertEqual(len((await self.manager.async_query(['i3'],start,end,500))['vehicles'][0]['trips']),2)
+        self.assertEqual(self.manager._status_db(['i3'])['i3']['point_count'],4)
+
+    async def test_merge_rejects_partial_group_and_deletes_only_its_members(self):
+        first=self.insert_trips()
+        # A third trip lies between the two selected trips in time; it must never be deleted by the group.
+        for minute in (14,16):
+            self.manager._insert_point_db('i3','i3',tracking.Point((first+timedelta(minutes=minute)).timestamp(),55+minute/10000,9))
+        start,end=first-timedelta(seconds=1),NOW
+        trips=(await self.manager.async_query(['i3'],start,end,500))['vehicles'][0]['trips']
+        self.assertEqual(len(trips),3)
+        selected=[{'entry_id':'i3','trip_id':t['id'],'start_ts':tracking._parse_ts(t['start']).timestamp(),
+                   'end_ts':tracking._parse_ts(t['end']).timestamp()} for t in (trips[0],trips[2])]
+        group_id=self.manager._batch_trip_action_db('merge',selected)['group_id']
+        grouped=(await self.manager.async_query(['i3'],start,end,500))['vehicles'][0]
+        self.assertEqual(len(grouped['trips']),2)
+        self.assertEqual(grouped['trips'][0]['id'],group_id)
+        self.assertEqual(grouped['trips'][0]['indices'],[0,2])
+        group_members=[{'id':t['trip_id'],'start_ts':t['start_ts'],'end_ts':t['end_ts']} for t in selected]
+        gpx=await self.manager.async_gpx('i3',tracking._parse_ts(trips[0]['start']),
+            tracking._parse_ts(trips[2]['end']),group_id=group_id,members=group_members)
+        self.assertEqual(gpx['content'].count('<trkseg>'),2)
+        self.assertEqual(gpx['content'].count('<trkpt '),4)
+        with self.assertRaises(ValueError):
+            self.manager._batch_trip_action_db('merge',[selected[0],{'entry_id':'i3','trip_id':trips[1]['id'],
+                'start_ts':tracking._parse_ts(trips[1]['start']).timestamp(),
+                'end_ts':tracking._parse_ts(trips[1]['end']).timestamp()}])
+        folder=self.manager._folder_action_db('save',{'name':'Day trip'})['folder_id']
+        self.manager._batch_trip_action_db('move',selected,folder)
+        self.assertEqual(len([t for t in (await self.manager.async_query(['i3'],start,end,500))['vehicles'][0]['trips'] if folder in t['folders']]),1)
+        deleted=self.manager._batch_trip_action_db('delete',selected)
+        self.assertEqual(deleted['deleted'],4)
+        remaining=(await self.manager.async_query(['i3'],start,end,500))['vehicles'][0]
+        self.assertEqual(remaining['trip_count'],1)
+        self.assertEqual(remaining['trips'][0]['id'],trips[1]['id'])
+        self.assertEqual(self.manager._status_db(['i3'])['i3']['point_count'],2)
+
+    async def test_extend_group_requires_all_existing_members(self):
+        first=self.insert_trips()
+        for minute in (60,62):
+            self.manager._insert_point_db('i3','i3',tracking.Point((first+timedelta(minutes=minute)).timestamp(),54+minute/10000,9))
+        start,end=first-timedelta(seconds=1),NOW
+        trips=(await self.manager.async_query(['i3'],start,end,500))['vehicles'][0]['trips']
+        selected=[{'entry_id':'i3','trip_id':t['id'],'start_ts':tracking._parse_ts(t['start']).timestamp(),
+                   'end_ts':tracking._parse_ts(t['end']).timestamp()} for t in trips]
+        first_group=self.manager._batch_trip_action_db('merge',selected[:2])['group_id']
+        with self.assertRaises(ValueError):
+            self.manager._batch_trip_action_db('merge',selected[1:])
+        self.assertEqual(self.manager._batch_trip_action_db('merge',selected)['group_id'],first_group)
+        result=(await self.manager.async_query(['i3'],start,end,500))['vehicles'][0]
+        self.assertEqual(result['trip_count'],1)
+        self.assertEqual(result['trips'][0]['indices'],[0,1,2])
+        self.assertEqual(result['trips'][0]['point_count'],6)
+
     async def test_batch_validation_is_atomic_and_move_is_atomic(self):
         first=self.insert_trips()
         trips=(await self.manager.async_query(['i3'],first-timedelta(seconds=1),NOW,500))['vehicles'][0]['trips']

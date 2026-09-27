@@ -6,7 +6,7 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.71\
+> **Current release:** v0.1.72\
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.71.js?v=0.1.71
+  - url: /cardata_analytics/cardata-analytics-card-0.1.72.js?v=0.1.72
     type: module
 ```
 
@@ -898,3 +898,9 @@ Set the GPS source's **Location entity** to the iPhone's `device_tracker` (for e
 In that vehicle's CarPlay rule, select its existing **iPhone location action** (for example `notify.mobile_app_iphone_matprivat`) and an interval of 10, 20, 30, 60, 120, 300 or 600 seconds, then save. The default is **Off**, including for existing rules; 60 seconds is recommended for initial testing. Every request sends the Companion App's silent `request_location_update` command from the backend while the CarPlay session is connected, even if the map is closed. On disconnect the repeating requests stop; one final request is sent after two seconds. A single new GPS fix within 20 seconds can finish the parked route, and the existing 90-second reconnect grace period is retained. Ending a trip cancels pending requests.
 
 **10 seconds is experimental:** this schedules up to 360 requests per hour, but iOS may delay or ignore them and will not guarantee one new GPS point per request. Frequent requests use more battery; use a longer interval when the track is sufficiently detailed. An incoming fix still passes the existing accuracy, freshness and movement filters before being written to the tracking database. Check a short drive and its last point before relying on phone GPS for longer trips.
+
+## Merge selected trips without changing GPS points (v0.1.72)
+
+In **Map → Tracking → Trips**, select at least two trips from the same vehicle using their checkboxes and choose **Merge selection**. They become one persistent row with summed GPS distance, driving time and point count. Clicking the row displays only its original track segments; pauses do not create a straight line between them. Playback can skip pauses, and the row's GPX export contains separate `<trkseg>` elements. Select a merged row together with another trip to extend the group. The split icon on a merged row separates the original trips again without changing any GPS points.
+
+The date range must include all parts of a group to show it as one row. A range with only some parts shows those parts individually; widen the range before moving, deleting or extending that group. Merged energy and odometer distance are calculated separately from existing Analytics history for each member, then summed only when every member has valid history. Folder moves and deletion on a merged row apply to its underlying trips; delete permanently removes their GPS points, whereas **Separate** only removes the group. A new table in the tracking SQLite database stores group membership, leaving existing tracks and Cardata counters unchanged.

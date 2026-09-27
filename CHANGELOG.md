@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.72 — Merge Selected GPS Trips
+
+- Merge selected trips from one vehicle into a persistent, reversible group, including nonadjacent trips and existing groups. Original GPS points and individual trip identities remain stored.
+- Show summed trip metrics, selected map segments, playback and multi-segment GPX without drawing a route across the pause. Combined energy and odometer distance sum existing Analytics history per member only when available.
+- Apply folder moves and deletion to underlying members, validate entire groups and reject stale ranges. A partial date filter displays visible members separately until the full group is loaded.
+- Add two tracking SQLite group tables and update the frontend resource to `cardata-analytics-card-0.1.72.js?v=0.1.72`.
+
 ## 0.1.71 — Optional iPhone Location Requests for CarPlay Tracks
 
 - Add opt-in `notify.mobile_app_*` location requests to CarPlay rules, with Off and 10–600-second intervals; existing rules stay Off.

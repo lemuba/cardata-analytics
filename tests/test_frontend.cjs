@@ -466,5 +466,39 @@ async function test(name, fn){await fn();checks++;console.log('PASS',name);}
     panel.querySelector('#tracking-bulk-all')?.click();
     c._clearTrackingResult();assert.equal(c._trackingBulkSelected.size,0);
   });
+  await test('merging selected trips sends both exact ranges and keeps GPS data',async()=>{
+    const {c,panel,data}=fixture();c._hass.user={is_admin:true};
+    data.vehicles[0].trips.forEach((t,i)=>{t.id='trip-'+i;t.folders=[];});
+    c._renderTrackingPanel();panel.querySelector('#tracking-bulk-all').click();
+    assert.ok(panel.querySelector('#tracking-bulk-merge'));
+    let request;c._hass.callWS=async req=>{request=req;return {trips:2,group_id:'group-1'};};
+    c._loadTrackingStatus=async()=>{};c._loadTrackingTrack=async()=>{};
+    await panel.querySelector('#tracking-bulk-merge').click();
+    assert.equal(request.action,'merge');assert.equal(request.trips.length,2);
+    assert.deepEqual([...request.trips].map(t=>t.trip_id),['trip-1','trip-0']);
+    assert.equal(c._trackingBulkSelected.size,0);
+  });
+  await test('merged trip map playback GPX and deletion use only member segments',async()=>{
+    const {c,panel,data,sources}=fixture();c._hass.user={is_admin:true};
+    const original=data.vehicles[0].trips;
+    const merged={...original[0],id:'group-1',index:2,indices:[2,3],start:original[0].start,end:original[1].end,
+      point_count:28,trip_count:1,distance_km:31.3,duration_seconds:1800,folders:[],
+      members:original.map((trip,i)=>({id:`trip-${i}`,index:trip.index,start:trip.start,end:trip.end}))};
+    data.vehicles[0].trips=[merged];c._renderTrackingPanel();
+    assert.match(panel.innerHTML,/2 Teilstrecken/);
+    c._selectTrackingTrip('one',2);
+    assert.equal(c._trackingVisibleVehicles()[0].segments.length,2);
+    assert.equal(sources['cardata-tracks'].data.features.length,26);
+    assert.equal(c._trackingPlaybackFlat.length,28);
+    let request;c._hass.callWS=async req=>{request=req;return {filename:'group.gpx',content:'<gpx/>'};};
+    await c._downloadTrackingGpx(2);
+    assert.equal(request.group_id,'group-1');assert.equal(request.members.length,2);
+    c._loadTrackingStatus=async()=>{};c._loadTrackingTrack=async()=>{};
+    await c._deleteSingleTrip(merged);
+    assert.equal(request.action,'delete');assert.deepEqual([...request.trips].map(t=>t.trip_id),['trip-0','trip-1']);
+    c._renderTrackingPanel();
+    await c._unmergeTrackingTrip(merged);
+    assert.equal(request.action,'unmerge');assert.equal(request.group_id,'group-1');
+  });
   console.log(`${checks} frontend behavior tests passed. Browser layout and real HA still require manual verification.`);
 })().catch(err=>{console.error(err);process.exitCode=1;});
