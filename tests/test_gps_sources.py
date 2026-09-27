@@ -115,6 +115,26 @@ class SourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('a', self.manager._sessions)
         self.assertTrue(await self.manager.async_record_current('a'))
 
+    async def test_native_tracking_survives_stopped_phone_session(self):
+        self.manager._entries['a'].data.update({'latitude_entity': 'sensor.lat', 'longitude_entity': 'sensor.lon'})
+        self.hass.states['sensor.lat'] = state(54, NOW)
+        self.hass.states['sensor.lon'] = state(9, NOW)
+        await self.manager.async_set_settings('a', True, 0)
+        self.assertTrue(await self.manager.async_record_current('a'))
+        await self.start()
+        status = await self.manager.async_status()
+        self.assertTrue(next(v for v in status['vehicles'] if v['entry_id'] == 'a')['enabled'])
+        await self.manager.async_source_action('stop', {'entry_id': 'a'})
+        status = await self.manager.async_status()
+        vehicle = next(v for v in status['vehicles'] if v['entry_id'] == 'a')
+        self.assertTrue(vehicle['enabled'])
+        self.assertFalse(vehicle['session']['active'])
+        self.hass.states['sensor.lat'] = state(54.002, NOW + timedelta(seconds=30))
+        self.hass.states['sensor.lon'] = state(9.002, NOW + timedelta(seconds=30))
+        self.assertTrue(await self.manager.async_record_current('a'))
+        self.assertEqual(self.manager._last_point_db('a').source, 'live')
+        self.assertEqual(self.manager._status_db(['a'])['a']['live_point_count'], 2)
+
     async def test_duplicate_entities_cannot_bypass_phone_exclusivity(self):
         with self.assertRaises(ValueError):
             await self.manager.async_source_action('save', {'name':'Same phone','entity_id':'sensor.phone','vehicles':['b']})

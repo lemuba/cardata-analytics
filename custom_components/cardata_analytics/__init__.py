@@ -44,8 +44,8 @@ from .tracking import (
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_URL = "/cardata_analytics"
-FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.72.js"
-FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.72"
+FRONTEND_CARD_PATH = f"{FRONTEND_URL}/cardata-analytics-card-0.1.73.js"
+FRONTEND_MODULE = f"{FRONTEND_CARD_PATH}?v=0.1.73"
 FRONTEND_CARD_PREFIX = f"{FRONTEND_URL}/cardata-analytics-card"
 DATA_FRONTEND_REGISTERED = "frontend_registered"
 

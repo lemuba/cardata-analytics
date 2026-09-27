@@ -380,10 +380,9 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                 return False
             if session.get("active"):
                 point = self._external_candidate(entry)
-            elif session:
-                # Explicitly ended external trips stay parked; no silent fallback.
-                return False
             elif self.setting(entry_id)["enabled"]:
+                # A stopped phone trip must not disable native GPS recording.
+                # Vehicles without native tracking remain parked after stopping.
                 point = self._current_candidate(entry)
             else:
                 return False
@@ -530,7 +529,7 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                     "gps_configured": bool(entry.data.get(CONF_LATITUDE_ENTITY) and entry.data.get(CONF_LONGITUDE_ENTITY)) or any(entry_id in s["vehicles"] for s in self._sources.values()) or bool(db.get(entry_id, {}).get("point_count")),
                     "native_gps": bool(entry.data.get(CONF_LATITUDE_ENTITY) and entry.data.get(CONF_LONGITUDE_ENTITY)),
                     "session": self._sessions.get(entry_id),
-                    "enabled": bool(setting["enabled"]) and entry_id not in self._sessions,
+                    "enabled": bool(setting["enabled"]),
                     "retention_days": int(setting["retention_days"]),
                     **db.get(entry_id, {}),
                 }

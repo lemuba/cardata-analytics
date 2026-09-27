@@ -362,6 +362,33 @@ async function test(name, fn){await fn();checks++;console.log('PASS',name);}
     assert.equal(c._focusVehicle('live',{follow:true,showPopup:false,animate:false}),true);
     assert.equal(c._trackingPlaybackRunning,false);assert.equal(c._trackingCameraActive,false);assert.equal(c._mode,'gps');
   });
+  await test('live follow keeps vehicle centered when zooming and preserves follow on pinch',async()=>{
+    const {c}=fixture();let lat=54,lon=9,zoom=13,center={lat, lng:lon};
+    const wheel={disable(){},enable(options){this.options=options;}};
+    const touch={disable(){},enable(options){this.options=options;},disableRotation(){}};
+    const map=c._vectorMap;
+    Object.assign(map,{scrollZoom:wheel,touchZoomRotate:touch,getCenter:()=>center,getZoom:()=>zoom,
+      stop(){},easeTo(camera){zoom=camera.zoom??zoom;if(camera.center)center={lat:camera.center[1],lng:camera.center[0]};},
+      jumpTo(camera){zoom=camera.zoom??zoom;if(camera.center)center={lat:camera.center[1],lng:camera.center[0]};}});
+    c._vehicles=()=>[{deviceId:'live',valid:true,lat,lon}];c._tileProvider=()=>({maxZoom:20,terrain:false});
+    c._syncVehicleMapMarkers=()=>{};c._renderVehiclePanel=()=>{};c._renderPoiPanel=()=>{};
+    assert.equal(c._focusVehicle('live',{follow:true,showPopup:false,animate:false}),true);
+    assert.equal(wheel.options.around,'center');assert.equal(touch.options.around,'center');
+    c._changeZoom(-2);assert.equal(center.lat,lat);assert.equal(center.lng,lon);assert.equal(zoom,13);
+    c._handleMapDragStart({originalEvent:{touches:[{},{}]}});
+    assert.equal(c._mode,'gps');
+    lat=54.003;lon=9.004;c._followSelectedVehiclePosition({animate:false});
+    assert.equal(center.lat,lat);assert.equal(center.lng,lon);
+    c._handleMapDragStart({originalEvent:{touches:[{}]}});
+    assert.notEqual(c._mode,'gps');assert.equal(wheel.options,undefined);assert.equal(touch.options,undefined);
+  });
+  await test('saved native GPS checkbox stays checked after a phone GPS session stops',async()=>{
+    const {c,panel}=fixture();
+    c._trackingStatus.vehicles[0].session={active:false,source_id:'phone'};
+    c._renderTrackingPanel();
+    assert.equal(panel.querySelector('[data-track-enable="one"]').checked,true);
+    assert.equal(panel.querySelector('[data-track-enable="one"]').attrs.disabled,undefined);
+  });
   await test('GPS management form and trip controls include vehicles without native GPS',async()=>{
     const {c,panel}=fixture(); c._hass.user={is_admin:true};
     c._trackingStatus.sources=[{id:'phone',name:'Phone',entity_id:'sensor.phone',vehicles:['twingo']}];
@@ -388,6 +415,16 @@ async function test(name, fn){await fn();checks++;console.log('PASS',name);}
     c._hass.states={'sensor.soc':{state:'77'},'sensor.phone':{attributes:{latitude:53,longitude:9}}};
     const data=Card.prototype._vehicleData.call(c,{entryId:'one',entities:{soc:'sensor.soc'}});
     assert.equal(data.lat,52);assert.equal(data.lon,8);assert.equal(data.soc,77);assert.equal(data.address,null);
+  });
+  await test('new native GPS positions replace parked phone positions but not active phone positions',async()=>{
+    const {c}=fixture();const tracked=c._trackingStatus.vehicles[0];
+    tracked.session={active:false,last_fix:{lat:52,lon:8,ts:'2026-09-18T17:41:00Z'}};
+    c._hass.states={'sensor.lat':{state:'54',last_updated:'2026-09-18T17:45:00Z'},
+      'sensor.lon':{state:'9',last_updated:'2026-09-18T17:45:00Z'}};
+    const vehicle={entryId:'one',entities:{latitude:'sensor.lat',longitude:'sensor.lon'}};
+    assert.equal(c._vehicleData(vehicle).lat,54);assert.equal(c._vehicleData(vehicle).lon,9);
+    tracked.session.active=true;
+    assert.equal(c._vehicleData(vehicle).lat,52);assert.equal(c._vehicleData(vehicle).lon,8);
   });
   await test('GPS sources and active sessions render in English and escape source names',async()=>{
     const {c,panel}=fixture();c._hass.language='en';c._hass.locale.language='en';c._hass.user={is_admin:true};

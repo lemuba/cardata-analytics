@@ -6,7 +6,7 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.72\
+> **Current release:** v0.1.73\
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.72.js?v=0.1.72
+  - url: /cardata_analytics/cardata-analytics-card-0.1.73.js?v=0.1.73
     type: module
 ```
 
@@ -904,3 +904,9 @@ In that vehicle's CarPlay rule, select its existing **iPhone location action** (
 In **Map → Tracking → Trips**, select at least two trips from the same vehicle using their checkboxes and choose **Merge selection**. They become one persistent row with summed GPS distance, driving time and point count. Clicking the row displays only its original track segments; pauses do not create a straight line between them. Playback can skip pauses, and the row's GPX export contains separate `<trkseg>` elements. Select a merged row together with another trip to extend the group. The split icon on a merged row separates the original trips again without changing any GPS points.
 
 The date range must include all parts of a group to show it as one row. A range with only some parts shows those parts individually; widen the range before moving, deleting or extending that group. Merged energy and odometer distance are calculated separately from existing Analytics history for each member, then summed only when every member has valid history. Folder moves and deletion on a merged row apply to its underlying trips; delete permanently removes their GPS points, whereas **Separate** only removes the group. A new table in the tracking SQLite database stores group membership, leaving existing tracks and Cardata counters unchanged.
+
+## Native GPS recording and live map follow (v0.1.73)
+
+For vehicles with native latitude and longitude sensors, the **Record GPS tracking** checkbox now reflects the saved recording setting even when a previously used phone GPS session is still listed. Once a phone session ends, enabled native GPS recording continues automatically; newer native positions also replace the parked phone position on the live map. Vehicles without enabled native tracking still stop recording when their phone session ends. New points are stored in the tracking SQLite database as they arrive; **Import Recorder** is only needed to recover older points from Home Assistant history.
+
+In live vehicle **Follow** mode, the map keeps the vehicle at its center while using the zoom buttons, mouse wheel or two-finger pinch. Pinching does not turn off Follow; deliberately dragging the map still releases Follow. Historical track playback camera modes are unaffected.
