@@ -4,11 +4,15 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import logging
 from uuid import uuid4
 
 from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
+
+_LOGGER = logging.getLogger(__name__)
+LOCATION_INTERVALS = {0, 10, 20, 30, 60, 120, 300, 600}
 
 
 class GPSSourcesMixin:
@@ -20,6 +24,8 @@ class GPSSourcesMixin:
         self._auto_rules = {}
         self._auto_unsubs = {}
         self._auto_timers = {}
+        self._location_poll_tasks = {}
+        self._final_fix_tasks = {}
 
     def _load_sources_db(self):
         with self._connect() as con:
@@ -92,6 +98,7 @@ class GPSSourcesMixin:
             for entry_id in self._entries:
                 self._listen_source(entry_id)
                 self._listen_auto(entry_id)
+                self._sync_location_poll(entry_id)
             if action == "stop":
                 entry_id = data.get("entry_id")
                 rule = self._auto_rules.get(entry_id)
@@ -99,10 +106,12 @@ class GPSSourcesMixin:
                     rule["blocked"] = True
                     await self._persist_sources()
                 self._cancel_auto_timer(entry_id)
+                self._cancel_final_fix(entry_id)
             if action in {"auto_save", "auto_delete"}:
                 entry_id = data.get("entry_id")
                 if action == "auto_delete":
                     self._cancel_auto_timer(entry_id)
+                    self._cancel_final_fix(entry_id)
                 if entry_id in self._entries:
                     self.hass.async_create_task(self._reconcile_auto(entry_id))
             if action == "start":
@@ -116,16 +125,28 @@ class GPSSourcesMixin:
             source_id = data.get("source_id")
             sensor = str(data.get("ssid_entity", ""))
             ssid = str(data.get("ssid", "")).strip()
+            notify_service = str(data.get("notify_service", "")).strip()
+            try:
+                interval = int(data.get("location_interval", 0))
+            except (TypeError, ValueError):
+                raise ValueError("Select a supported location request interval") from None
+            if interval not in LOCATION_INTERVALS:
+                raise ValueError("Select a supported location request interval")
+            if interval:
+                if not notify_service.startswith("notify.mobile_app_") or not self.hass.services.has_service("notify", notify_service.split(".", 1)[1]):
+                    raise ValueError("Select the iPhone's existing mobile app notification action")
+            elif notify_service and not notify_service.startswith("notify.mobile_app_"):
+                raise ValueError("Select a mobile app notification action")
             if entry_id not in self._entries or source_id not in self._sources or entry_id not in self._sources[source_id]["vehicles"]:
                 raise ValueError("GPS source is not assigned to this vehicle")
             if not sensor.startswith("sensor.") or self.hass.states.get(sensor) is None or not ssid or len(ssid) > 100:
                 raise ValueError("Select an existing SSID sensor and a Wi-Fi network name")
             if any(v != entry_id and r["ssid_entity"] == sensor and r["ssid"] == ssid for v, r in self._auto_rules.items()):
                 raise ValueError("This SSID already starts another vehicle")
-            current = self._auto_rules.get(entry_id, {})
             if self._sessions.get(entry_id, {}).get("active") and self._sessions[entry_id].get("mode") == "auto":
                 raise ValueError("End the active automatic trip before changing its rule")
-            self._auto_rules[entry_id] = {"source_id": source_id, "ssid_entity": sensor, "ssid": ssid, "blocked": False}
+            self._auto_rules[entry_id] = {"source_id": source_id, "ssid_entity": sensor, "ssid": ssid, "blocked": False,
+                                          "notify_service": notify_service, "location_interval": interval}
             return {}
         if action == "auto_delete":
             entry_id = data.get("entry_id")
@@ -195,6 +216,71 @@ class GPSSourcesMixin:
         if task and not task.done() and task is not asyncio.current_task():
             task.cancel()
 
+    def _cancel_final_fix(self, entry_id):
+        task = self._final_fix_tasks.pop(entry_id, None)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _cancel_location_poll(self, entry_id):
+        task = self._location_poll_tasks.pop(entry_id, None)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def _sync_location_poll(self, entry_id):
+        rule = self._auto_rules.get(entry_id, {})
+        session = self._sessions.get(entry_id, {})
+        interval = rule.get("location_interval", 0)
+        if (entry_id in self._entries and interval in LOCATION_INTERVALS - {0}
+                and rule.get("notify_service") and session.get("active")
+                and session.get("mode") == "auto" and not session.get("suspended")
+                and self._auto_connected(rule)):
+            task = self._location_poll_tasks.get(entry_id)
+            if task and not task.done():
+                return
+            self._location_poll_tasks[entry_id] = self.hass.async_create_task(
+                self._location_poll(entry_id, session["token"], rule["notify_service"], interval)
+            )
+        else:
+            self._cancel_location_poll(entry_id)
+
+    async def _request_location(self, service):
+        try:
+            domain, name = service.split(".", 1)
+            if domain == "notify" and name.startswith("mobile_app_") and self.hass.services.has_service(domain, name):
+                await self.hass.services.async_call(domain, name, {"message": "request_location_update"}, blocking=False)
+        except Exception:
+            _LOGGER.warning("Could not request phone GPS location via %s", service, exc_info=True)
+
+    async def _location_poll(self, entry_id, token, service, interval):
+        try:
+            while True:
+                rule = self._auto_rules.get(entry_id, {})
+                session = self._sessions.get(entry_id, {})
+                if (session.get("token") != token or not session.get("active") or session.get("suspended")
+                        or rule.get("notify_service") != service or rule.get("location_interval") != interval
+                        or not self._auto_connected(rule)):
+                    return
+                await self._request_location(service)
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._location_poll_tasks.get(entry_id) is asyncio.current_task():
+                self._location_poll_tasks.pop(entry_id, None)
+
+    async def _request_final_fix(self, entry_id, token, service):
+        try:
+            # Give the phone a moment to leave CarPlay Wi-Fi and regain data connectivity.
+            await asyncio.sleep(2)
+            session = self._sessions.get(entry_id, {})
+            if session.get("token") == token and session.get("active") and session.get("suspended"):
+                await self._request_location(service)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._final_fix_tasks.get(entry_id) is asyncio.current_task():
+                self._final_fix_tasks.pop(entry_id, None)
+
     def _listen_auto(self, entry_id):
         unsub = self._auto_unsubs.pop(entry_id, None)
         if unsub:
@@ -202,6 +288,7 @@ class GPSSourcesMixin:
         rule = self._auto_rules.get(entry_id)
         if not rule or entry_id not in self._entries:
             self._cancel_auto_timer(entry_id)
+            self._cancel_location_poll(entry_id)
             return
 
         @callback
@@ -216,10 +303,12 @@ class GPSSourcesMixin:
             return
         if self._auto_connected(rule):
             self._cancel_auto_timer(entry_id)
+            self._cancel_final_fix(entry_id)
             session = self._sessions.get(entry_id, {})
             if session.get("active") and session.get("mode") == "auto" and session.get("suspended"):
                 async with self._source_lock:
                     session["suspended"] = False
+                    session.pop("final_until", None)
                     await self._persist_sources()
                     self._schedule_sample(entry_id, delay=0.1)
             elif not session.get("active") and not rule.get("blocked"):
@@ -228,13 +317,26 @@ class GPSSourcesMixin:
                 except ValueError:
                     # A shared phone may already be in use by another vehicle.
                     return
+            self._sync_location_poll(entry_id)
             return
+        self._cancel_location_poll(entry_id)
         if rule.get("blocked"):
             rule["blocked"] = False
             await self._persist_sources()
         session = self._sessions.get(entry_id, {})
         if session.get("active") and session.get("mode") == "auto":
-            session["suspended"] = True
+            if not session.get("suspended"):
+                session["suspended"] = True
+                service = rule.get("notify_service") if rule.get("location_interval") else None
+                if service:
+                    now = dt_util.utcnow().timestamp()
+                    session["disconnected_at"] = now
+                    session["final_until"] = now + 20
+                    self._cancel_final_fix(entry_id)
+                    self._final_fix_tasks[entry_id] = self.hass.async_create_task(
+                        self._request_final_fix(entry_id, session["token"], service)
+                    )
+                await self._persist_sources()
             self._cancel_auto_timer(entry_id)
             self._auto_timers[entry_id] = self.hass.async_create_task(self._auto_disconnect(entry_id, session["token"]))
 
@@ -253,12 +355,17 @@ class GPSSourcesMixin:
         from .tracking import Point, _state_number
         from .const import CONF_MILEAGE_ENTITY, CONF_SOC_ENTITY
         session = self._sessions.get(entry.entry_id, {})
-        if not session.get("active") or session.get("suspended"):
+        if not session.get("active"):
             return None
         source = self._sources.get(session["source_id"])
         fix = self._source_fix(source) if source else None
         if fix is None or fix["ts"] < session["started"] - 120:
             return None
+        if session.get("suspended"):
+            now = dt_util.utcnow().timestamp()
+            if (not session.get("final_until") or now > session["final_until"]
+                    or not session.get("disconnected_at") or fix["ts"] < session["disconnected_at"]):
+                return None
         fix["ts"] = max(fix["ts"], session["started"])
         return Point(**fix, odometer=_state_number(self.hass, entry.data.get(CONF_MILEAGE_ENTITY)),
                      soc=_state_number(self.hass, entry.data.get(CONF_SOC_ENTITY)),

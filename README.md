@@ -6,7 +6,7 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.70\
+> **Current release:** v0.1.71\
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.70.js?v=0.1.70
+  - url: /cardata_analytics/cardata-analytics-card-0.1.71.js?v=0.1.71
     type: module
 ```
 
@@ -890,3 +890,11 @@ A disconnect immediately pauses GPS recording. A reconnection within 90 seconds 
 The **Folder / collection** selector filters the currently selected tracking date range and shows assigned tracks together on the map. Create nested folders, assign trips, select all trips shown in the current range, and move or delete the selection in one action. You may also delete an individual trip. A folder stores references to its trips; removing a folder leaves the GPS data untouched. Trip deletion permanently removes only that trip's GPS points, so export GPX before deleting if needed. If new Recorder points change a selected trip's boundaries, the delete/move request rejects the whole selection until the list is refreshed. Existing period-wide and all-point delete actions remain separate. Folder contents, mappings, session rules and GPS points are stored in the existing tracking SQLite database (new tables are additive); older databases are upgraded automatically.
 
 **Current trip consumption limitation:** GPS line length is an approximation and is not used as a substitute for vehicle mileage to compute energy consumption. Missing vehicle odometer history can still leave the selected-trip average unavailable; the previously proposed GPS fallback was not released.
+
+## Optional iPhone GPS requests during CarPlay trips (v0.1.71)
+
+Set the GPS source's **Location entity** to the iPhone's `device_tracker` (for example `device_tracker.iphone_matprivat_28`) if it provides the current `latitude`, `longitude` and `gps_accuracy` attributes. The CarPlay SSID sensor stays in the separate **Automatic start by CarPlay SSID** field.
+
+In that vehicle's CarPlay rule, select its existing **iPhone location action** (for example `notify.mobile_app_iphone_matprivat`) and an interval of 10, 20, 30, 60, 120, 300 or 600 seconds, then save. The default is **Off**, including for existing rules; 60 seconds is recommended for initial testing. Every request sends the Companion App's silent `request_location_update` command from the backend while the CarPlay session is connected, even if the map is closed. On disconnect the repeating requests stop; one final request is sent after two seconds. A single new GPS fix within 20 seconds can finish the parked route, and the existing 90-second reconnect grace period is retained. Ending a trip cancels pending requests.
+
+**10 seconds is experimental:** this schedules up to 360 requests per hour, but iOS may delay or ignore them and will not guarantee one new GPS point per request. Frequent requests use more battery; use a longer interval when the track is sufficiently detailed. An incoming fix still passes the existing accuracy, freshness and movement filters before being written to the tracking database. Check a short drive and its last point before relying on phone GPS for longer trips.

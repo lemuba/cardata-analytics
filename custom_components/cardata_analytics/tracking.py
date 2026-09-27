@@ -258,6 +258,8 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
         if auto_unsub:
             auto_unsub()
         self._cancel_auto_timer(entry_id)
+        self._cancel_location_poll(entry_id)
+        self._cancel_final_fix(entry_id)
         source_unsub = self._source_unsubs.pop(entry_id, None)
         if source_unsub:
             source_unsub()
@@ -387,6 +389,8 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                 self._last_points[entry_id] = point
                 if session.get("active"):
                     session["last_fix"] = point.as_dict()
+                    if session.get("suspended"):
+                        session.pop("final_until", None)
                     await self._persist_sources()
             return inserted
 
@@ -433,6 +437,8 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                     if previous_session is not None:
                         self._sessions[entry_id] = previous_session
                     raise
+                self._cancel_location_poll(entry_id)
+                self._cancel_final_fix(entry_id)
         setting = {"enabled": bool(enabled), "retention_days": int(retention_days)}
         self._settings[entry_id] = setting
         await self.hass.async_add_executor_job(self._save_setting_db, entry_id, setting)

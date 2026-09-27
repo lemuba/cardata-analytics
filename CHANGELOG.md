@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.71 — Optional iPhone Location Requests for CarPlay Tracks
+
+- Add opt-in `notify.mobile_app_*` location requests to CarPlay rules, with Off and 10–600-second intervals; existing rules stay Off.
+- Stop repeated requests on disconnect or trip end and request a final GPS fix after leaving CarPlay. Accept one fresh fix within 20 seconds; the existing 90-second reconnect window remains.
+- Continue using the configured phone `device_tracker` for coordinates. iOS does not guarantee one fix per request; the 10-second setting is experimental and can drain the phone battery.
+- Refresh the frontend resource to `cardata-analytics-card-0.1.71.js?v=0.1.71` without changing existing track history or analytics.
+
 ## 0.1.70 — CarPlay Auto Recording and Trip Folders
 
 - Start a vehicle's assigned phone GPS recording automatically when a configured Companion App SSID sensor matches a selected CarPlay network. The backend records without an open dashboard; manual controls remain available.
