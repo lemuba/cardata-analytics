@@ -8,6 +8,38 @@ from test_tracking import Hass, NOW, NS, state, tracking
 
 
 class AutoFoldersTests(unittest.IsolatedAsyncioTestCase):
+    async def test_folder_reparent_sibling_order_and_restart(self):
+        action = self.manager._folder_action_db
+        a = action('save', {'name':'A'})['folder_id']
+        b = action('save', {'name':'B'})['folder_id']
+        child = action('save', {'name':'child','parent_id':a})['folder_id']
+        grandchild = action('save', {'name':'grandchild','parent_id':child})['folder_id']
+        sibling = action('save', {'name':'sibling','parent_id':b})['folder_id']
+        self.assertEqual([f['id'] for f in self.manager._folder_db()], [a,child,grandchild,b,sibling])
+        action('save', {'folder_id':child,'name':'child','parent_id':b})
+        self.assertEqual([f['id'] for f in self.manager._folder_db()], [a,b,sibling,child,grandchild])
+        action('reorder', {'folder_id':child,'direction':'up'})
+        self.assertEqual([f['id'] for f in self.manager._folder_db()], [a,b,child,grandchild,sibling])
+        with self.assertRaises(ValueError):
+            action('save', {'folder_id':b,'name':'B','parent_id':grandchild})
+        with self.assertRaises(ValueError):
+            action('reorder', {'folder_id':child,'direction':'sideways'})
+        other = tracking.TrackingManager(self.hass)
+        await other.async_setup()
+        self.assertEqual(other._folder_db(), self.manager._folder_db())
+
+    async def test_existing_folder_database_gets_position_without_losing_memberships(self):
+        first = self.insert_trips()
+        trip = (await self.manager.async_query(['i3'],first-timedelta(seconds=1),NOW,500))['vehicles'][0]['trips'][0]
+        with self.manager._connect() as con:
+            con.execute('DROP TABLE trip_folders')
+            con.execute('CREATE TABLE trip_folders (id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT REFERENCES trip_folders(id))')
+            con.execute("INSERT INTO trip_folders VALUES ('z','Z',NULL),('a','A',NULL)")
+            con.execute("INSERT INTO trip_membership VALUES ('z',?)",(trip['id'],))
+        self.manager._init_trip_folders_db()
+        self.assertEqual([f['id'] for f in self.manager._folder_db()],['a','z'])
+        self.assertEqual((await self.manager.async_query(['i3'],first-timedelta(seconds=1),NOW,500))['vehicles'][0]['trips'][0]['folders'],['z'])
+
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.hass = Hass(self.temp.name)
@@ -183,6 +215,7 @@ class AutoFoldersTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(grouped['segments']),2)
         self.assertEqual(grouped['trips'][0]['id'],group_id)
         self.assertEqual(grouped['trips'][0]['point_count'],4)
+        self.assertEqual([t['id'] for t in grouped['trips'][0]['member_trips']], [t['id'] for t in trips])
         self.assertEqual(grouped['trips'][0]['indices'],[0,1])
         self.assertEqual(grouped['trips'][0]['duration_seconds'],240)
         self.assertEqual(grouped['trips'][0]['distance_km'],round(sum(t['distance_km'] for t in trips),3))

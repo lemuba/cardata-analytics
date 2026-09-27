@@ -9,7 +9,8 @@ class TripFoldersMixin:
         with self._connect() as con:
             con.executescript("""
                 CREATE TABLE IF NOT EXISTS trip_folders (
-                    id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT REFERENCES trip_folders(id)
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, parent_id TEXT REFERENCES trip_folders(id),
+                    position INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS trip_identity (
                     id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL, anchor_point_id INTEGER NOT NULL UNIQUE
@@ -28,6 +29,14 @@ class TripFoldersMixin:
                     PRIMARY KEY(group_id, trip_id)
                 );
             """)
+            if "position" not in {r[1] for r in con.execute("PRAGMA table_info(trip_folders)")}:
+                con.execute("ALTER TABLE trip_folders ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+                rows = con.execute("SELECT id, parent_id FROM trip_folders ORDER BY name COLLATE NOCASE, id").fetchall()
+                positions = {}
+                for row in rows:
+                    parent = row["parent_id"]
+                    positions[parent] = positions.get(parent, 0) + 1
+                    con.execute("UPDATE trip_folders SET position=? WHERE id=?", (positions[parent], row["id"]))
 
     def _trip_groups_db(self, entry_id):
         with self._connect() as con:
@@ -63,12 +72,23 @@ class TripFoldersMixin:
 
     def _folder_db(self):
         with self._connect() as con:
-            return [{"id": r["id"], "name": r["name"], "parent_id": r["parent_id"]}
-                    for r in con.execute("SELECT * FROM trip_folders ORDER BY name COLLATE NOCASE")]
+            rows = [dict(r) for r in con.execute("SELECT id, name, parent_id, position FROM trip_folders ORDER BY position, name COLLATE NOCASE, id")]
+            children = {}
+            for row in rows:
+                children.setdefault(row["parent_id"], []).append(row)
+            ordered = []
+            def visit(parent):
+                for child in children.get(parent, []):
+                    ordered.append(child)
+                    visit(child["id"])
+            visit(None)
+            return ordered
 
     def _folder_action_db(self, action, data):
         with self._connect() as con:
             con.execute("PRAGMA foreign_keys=ON")
+            if action in {"save", "reorder"}:
+                con.execute("BEGIN IMMEDIATE")
             if action == "save":
                 name = str(data.get("name", "")).strip()
                 parent = data.get("parent_id") or None
@@ -78,7 +98,8 @@ class TripFoldersMixin:
                 if folder_id == parent:
                     raise ValueError("A folder cannot contain itself")
                 if data.get("folder_id"):
-                    if not con.execute("SELECT 1 FROM trip_folders WHERE id=?", (folder_id,)).fetchone():
+                    existing = con.execute("SELECT parent_id FROM trip_folders WHERE id=?", (folder_id,)).fetchone()
+                    if not existing:
                         raise ValueError("Unknown folder")
                     ancestor = parent
                     while ancestor:
@@ -86,10 +107,33 @@ class TripFoldersMixin:
                             raise ValueError("Folders cannot form a cycle")
                         row = con.execute("SELECT parent_id FROM trip_folders WHERE id=?", (ancestor,)).fetchone()
                         ancestor = row[0] if row else None
-                    con.execute("UPDATE trip_folders SET name=?, parent_id=? WHERE id=?", (name, parent, folder_id))
+                    if existing["parent_id"] != parent:
+                        position = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM trip_folders WHERE parent_id IS ?", (parent,)).fetchone()[0]
+                        con.execute("UPDATE trip_folders SET name=?, parent_id=?, position=? WHERE id=?", (name, parent, position, folder_id))
+                    else:
+                        con.execute("UPDATE trip_folders SET name=? WHERE id=?", (name, folder_id))
                 else:
-                    con.execute("INSERT INTO trip_folders VALUES (?,?,?)", (folder_id, name, parent))
+                    position = con.execute("SELECT COALESCE(MAX(position),0)+1 FROM trip_folders WHERE parent_id IS ?", (parent,)).fetchone()[0]
+                    con.execute("INSERT INTO trip_folders (id,name,parent_id,position) VALUES (?,?,?,?)", (folder_id, name, parent, position))
                 return {"folder_id": folder_id}
+            if action == "reorder":
+                folder_id, direction = data.get("folder_id"), data.get("direction")
+                if direction not in {"up", "down"}:
+                    raise ValueError("Invalid folder direction")
+                folder = con.execute("SELECT id,parent_id FROM trip_folders WHERE id=?", (folder_id,)).fetchone()
+                if not folder:
+                    raise ValueError("Unknown folder")
+                siblings = [r["id"] for r in con.execute(
+                    "SELECT id FROM trip_folders WHERE parent_id IS ? ORDER BY position, name COLLATE NOCASE, id", (folder["parent_id"],))]
+                index = siblings.index(folder_id)
+                other = index + (-1 if direction == "up" else 1)
+                if not 0 <= other < len(siblings):
+                    return {}
+                # Normalizing sibling positions also fixes duplicate positions in old databases.
+                siblings[index], siblings[other] = siblings[other], siblings[index]
+                for pos, sibling_id in enumerate(siblings, 1):
+                    con.execute("UPDATE trip_folders SET position=? WHERE id=?", (pos, sibling_id))
+                return {}
             if action == "delete":
                 folder_id = data.get("folder_id")
                 if con.execute("SELECT 1 FROM trip_folders WHERE parent_id=?", (folder_id,)).fetchone():

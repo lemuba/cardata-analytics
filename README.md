@@ -6,7 +6,7 @@ It adds vehicle analytics, persistent comparison periods, an automatic multi-veh
 
 The integration does **not** connect directly to a vehicle manufacturer. It works with data supplied by another Home Assistant integration, MQTT, REST, CAN/OBD or any other source that exposes suitable sensor entities.
 
-> **Current release:** v0.1.74\
+> **Current release:** v0.1.75\
 > **Home Assistant:** 2026.1.0 or newer  
 > **Languages:** German and English. The Home Assistant language is detected automatically; other languages currently fall back to English.
 
@@ -290,7 +290,7 @@ If Lovelace resources are managed in YAML mode, add the current module manually:
 
 ```yaml
 resources:
-  - url: /cardata_analytics/cardata-analytics-card-0.1.74.js?v=0.1.74
+  - url: /cardata_analytics/cardata-analytics-card-0.1.75.js?v=0.1.75
     type: module
 ```
 
@@ -916,3 +916,9 @@ In live vehicle **Follow** mode, the map keeps the vehicle at its center while u
 Under **Map → Tracking → Manage GPS sources → Automatic start by CarPlay SSID**, the optional iPhone location request interval remains selectable at **Off, 10, 20, 30, 60, 120, 300 or 600 seconds**. A separate **Filter track points** setting offers **Off**, **Detailed**, **Balanced** and **Compact**. It filters actual incoming phone fixes, not the iPhone request schedule. Existing automatic rules with location requests enabled default to Balanced; rules without a request interval retain their earlier behavior until you choose a filter. Manual phone recording and native vehicle GPS are unchanged.
 
 The phone filter keeps the start, significant turns and periodically spaced fixes on long straight sections while ignoring stationary GPS jitter. A single candidate fix is held in a persistent, bounded buffer and the last useful fix is written to the track database when the trip ends or the integration reloads. The live vehicle marker still uses the latest accepted phone fix. During an active recording, the track point counter may lag behind the most recent position until that pending fix is committed. The filter stores no invented coordinates and cannot recover locations the iPhone never supplied. Home Assistant Recorder imports of native vehicle GPS data are unaffected. Use **Detailed** for narrow turns, **Balanced** for regular trips, **Compact** for fewer saved points or **Off** to retain the old recording behavior. Test a short route and its final point after changing the setting.
+
+## Nested trip folder management (v0.1.75)
+
+Choose a folder in the GPS history to move it to another folder or the top level. Use the arrow buttons to reorder folders at the same level; subfolders and assigned trips move with their folder. Full folder paths appear in selection menus. Existing folder order and trip assignments migrate automatically.
+
+When a merged trip spans multiple folders, each folder shows only its own matching segments; the full collection remains available under All trips. Moving a single trip now updates its folder assignment in one transaction.

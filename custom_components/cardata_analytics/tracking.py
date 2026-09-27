@@ -782,6 +782,7 @@ class TrackingManager(GPSSourcesMixin, TripFoldersMixin):
                 "id": group_id, "index": members[0]["index"],
                 "indices": [item["index"] for item in members],
                 "members": [{"id": item["id"], "index": item["index"], "start": item["start"], "end": item["end"]} for item in members],
+                "member_trips": members,
                 "folders": sorted({folder for item in members for folder in item.get("folders", [])}),
                 "start": members[0]["start"], "end": members[-1]["end"],
                 "distance_km": round(distance, 3),

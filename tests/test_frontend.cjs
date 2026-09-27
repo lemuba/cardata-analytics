@@ -543,5 +543,48 @@ async function test(name, fn){await fn();checks++;console.log('PASS',name);}
     await c._unmergeTrackingTrip(merged);
     assert.equal(request.action,'unmerge');assert.equal(request.group_id,'group-1');
   });
+  await test('nested folder move and sibling order use the saved tree and full path',async()=>{
+    const {c,panel}=fixture();c._hass.user={is_admin:true};
+    c._trackingStatus.folders=[
+      {id:'a',name:'Holiday',parent_id:null,position:1},
+      {id:'b',name:'South',parent_id:'a',position:1},
+      {id:'c',name:'Day 1',parent_id:'b',position:1},
+      {id:'d',name:'North',parent_id:null,position:2}];
+    c._trackingFolderId='b';c._renderTrackingPanel();
+    assert.equal(c._folderLabel('c'),'Holiday / South / Day 1');
+    assert.ok(panel.querySelector('#tracking-folder-move'));
+    assert.ok(panel.querySelector('#tracking-folder-down'));
+    assert.doesNotMatch(panel.innerHTML,/value="c"[^>]*>Holiday \/ South \/ Day 1<\/option><\/select><button id="tracking-folder-move"/);
+    const dest=panel.querySelector('#tracking-folder-destination');dest.value='d';dest.events.change({target:dest});
+    assert.equal(panel.querySelector('#tracking-folder-move').disabled,false);
+    let request;c._hass.callWS=async req=>{request=req;return {};};c._loadTrackingStatus=async()=>{};
+    await panel.querySelector('#tracking-folder-move').click();
+    assert.equal(request.action,'save');assert.equal(request.data.parent_id,'d');assert.equal(request.data.folder_id,'b');
+    await panel.querySelector('#tracking-folder-up').click();
+    assert.equal(request.action,'reorder');assert.equal(request.data.direction,'up');
+  });
+  await test('one trip moves atomically and selected folder shows only matching merged members',async()=>{
+    const {c,panel,data}=fixture();c._hass.user={is_admin:true};
+    const originals=data.vehicles[0].trips.map((trip,i)=>({...trip,id:`member-${i}`,folders:[i ? 'second' : 'first']}));
+    data.vehicles[0].trips=[{...originals[0],id:'group',index:originals[0].index,
+      indices:originals.map(t=>t.index),point_count:28,folders:['first','second'],
+      member_trips:originals,members:originals.map(t=>({id:t.id,index:t.index,start:t.start,end:t.end}))}];
+    c._trackingStatus.folders=[{id:'first',name:'First',parent_id:null},{id:'second',name:'Second',parent_id:null}];
+    c._trackingFolderId='second';c._renderTrackingPanel();
+    assert.equal(c._folderTrips(data.vehicles[0]).length,1);
+    assert.equal(c._folderTrips(data.vehicles[0])[0].id,'member-1');
+    assert.equal(c._trackingVisibleVehicles()[0].segments.length,1);
+    c._loadTrackingTripDetails=async()=>{};
+    c._selectTrackingTrip('one',originals[1].index);
+    assert.equal(c._trackingVisibleVehicles()[0].segments.length,1);
+    let req;c._hass.callWS=async r=>{req=r;return {};};
+    await c._downloadTrackingGpx(originals[1].index);
+    assert.equal(req.start,originals[1].start);
+    assert.equal(req.group_id,undefined);
+    c._loadTrackingStatus=async()=>{};c._loadTrackingTrack=async()=>{};
+    const select=panel.querySelector('[data-trip-folder="member-1"]');select.value='first';
+    await select.events.change({target:select});
+    assert.equal(req.action,'move');assert.equal(req.trips.length,1);assert.equal(req.trips[0].trip_id,'member-1');
+  });
   console.log(`${checks} frontend behavior tests passed. Browser layout and real HA still require manual verification.`);
 })().catch(err=>{console.error(err);process.exitCode=1;});
