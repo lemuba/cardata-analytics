@@ -1,11 +1,14 @@
 # Cardata Analytics
 
 
-Project archived — development continues as DriveLoom - https://github.com/lemuba/DriveLoom
+###### Project archived! ######## — development continues as DriveLoom - https://github.com/lemuba/DriveLoom
 
 Cardata Analytics was the starting point for DriveLoom. As the integration grew beyond its original scope, I decided to give it a new name and a cleaner foundation, including a single SQLite database for the data it manages. This repository remains available for reference, but future development will take place in DriveLoom.
 
 Please note: DriveLoom is a separate integration. It can run alongside Cardata Analytics, but it does not currently import its existing data.
+
+
+########################################################
 
 Cardata Analytics is a Home Assistant custom integration for analysing battery-electric vehicle data that already exists as Home Assistant sensor entities.
 
